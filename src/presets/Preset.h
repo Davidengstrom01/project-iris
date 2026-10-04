@@ -24,6 +24,7 @@ struct Preset {
     // temperatureShift is in mired (positive = warmer), tintShift in tint units.
     std::optional<float> temperatureShift;
     std::optional<float> tintShift;
+    std::optional<ToneCurve> toneCurve;
 
     bool operator==(const Preset&) const = default;
 };
@@ -31,9 +32,12 @@ struct Preset {
 // Applies a preset as a new edit state (the caller records it for undo).
 EditState applyPreset(const EditState& state, const Preset& preset);
 
-// Builds a preset from the current adjustments, keeping only the given keys.
-Preset presetFromAdjustments(const std::string& name, const BasicAdjustments& adjustments,
-                             const std::vector<std::string>& keys);
+// Key that selects the tone curve in presetFromEdits().
+inline constexpr const char* kToneCurveKey = "toneCurve";
+
+// Builds a preset from the current edits, keeping only the given keys (adjustment keys
+// such as "exposure", or kToneCurveKey).
+Preset presetFromEdits(const std::string& name, const EditState& edits, const std::vector<std::string>& keys);
 
 QJsonObject presetToJson(const Preset& preset);
 // Throws std::runtime_error for invalid presets.

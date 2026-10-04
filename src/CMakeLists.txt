@@ -2,11 +2,12 @@
 #   ui / cli  ->  export       ->  rendering  ->  core
 #   ui / cli  ->  raw          ->  core
 #   ui / cli  ->  persistence  ->  core        (sidecars, QtCore JSON)
-#   ui        ->  presets      ->  core        (QtCore JSON)
+#   ui        ->  presets      ->  persistence ->  core
 
 add_library(iris_core STATIC
     core/Image.h core/PhotoMetadata.h
     core/EditState.h core/EditState.cpp
+    core/Curve.h core/Curve.cpp
     core/EditHistory.h core/EditHistory.cpp
     core/ColorScience.h core/ColorScience.cpp)
 target_include_directories(iris_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -19,6 +20,7 @@ add_library(iris_rendering STATIC
     rendering/ColorTransform.h rendering/ColorTransform.cpp
     rendering/Resample.h rendering/Resample.cpp
     rendering/Tone.h rendering/Tone.cpp
+    rendering/Histogram.h rendering/Histogram.cpp
     rendering/WhiteBalanceTools.h rendering/WhiteBalanceTools.cpp
     rendering/Pipeline.h rendering/Pipeline.cpp)
 target_link_libraries(iris_rendering PUBLIC iris_core PRIVATE PkgConfig::LCMS2 OpenMP::OpenMP_CXX)
@@ -35,7 +37,7 @@ target_link_libraries(iris_persistence PUBLIC iris_core Qt6::Core)
 add_library(iris_presets STATIC
     presets/Preset.h presets/Preset.cpp
     presets/PresetLibrary.h presets/PresetLibrary.cpp)
-target_link_libraries(iris_presets PUBLIC iris_core Qt6::Core)
+target_link_libraries(iris_presets PUBLIC iris_core iris_persistence Qt6::Core)
 # Built-in presets are plain preset files, bundled as Qt resources under :/presets/builtin.
 file(GLOB IRIS_BUILTIN_PRESETS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/presets/builtin/*.json)
 foreach(preset ${IRIS_BUILTIN_PRESETS})
@@ -57,7 +59,10 @@ qt_add_library(iris_ui STATIC
     ui/ExportDialog.h ui/ExportDialog.cpp
     ui/EditDocument.h ui/EditDocument.cpp
     ui/PresetPanel.h ui/PresetPanel.cpp
-    ui/SavePresetDialog.h ui/SavePresetDialog.cpp)
+    ui/SavePresetDialog.h ui/SavePresetDialog.cpp
+    ui/HistogramWidget.h ui/HistogramWidget.cpp
+    ui/CurveEditor.h ui/CurveEditor.cpp
+    ui/ToneCurvePanel.h ui/ToneCurvePanel.cpp)
 target_link_libraries(iris_ui PUBLIC iris_raw iris_export iris_persistence iris_presets Qt6::Widgets Qt6::Concurrent)
 
 qt_add_executable(iris ui/main.cpp)

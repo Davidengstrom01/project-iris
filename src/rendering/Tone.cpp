@@ -66,9 +66,9 @@ constexpr float kMinLuminance = 1.0f / 65536.0f;
 
 } // namespace
 
-// --- ToneCurve -------------------------------------------------------------------
+// --- ToneLut ---------------------------------------------------------------------
 
-double ToneCurve::evaluate(double v, const BasicAdjustments& a)
+double ToneLut::evaluateBasic(double v, const BasicAdjustments& a)
 {
     double p = std::pow(std::max(v, 0.0), 1.0 / kGamma);
 
@@ -93,18 +93,23 @@ double ToneCurve::evaluate(double v, const BasicAdjustments& a)
     return std::pow(std::clamp(p, 0.0, 1.0), kGamma);
 }
 
-ToneCurve::ToneCurve(const BasicAdjustments& adjustments) : m_table(kTableSize + 1)
+ToneLut::ToneLut(const BasicAdjustments& adjustments, const ToneCurve& curve) : m_table(kTableSize + 1)
 {
     m_scale = float(kTableSize) / kMaxInput;
-    const bool identity = adjustments.whites == 0 && adjustments.blacks == 0 && adjustments.contrast == 0;
+    const bool basicIdentity = adjustments.whites == 0 && adjustments.blacks == 0 && adjustments.contrast == 0;
+    const bool curveIdentity = curve.isIdentity();
+    const CurveSpline spline(curve.rgb);
 #pragma omp parallel for schedule(static)
     for (int i = 0; i <= kTableSize; ++i) {
         const double v = double(i) / m_scale;
-        m_table[i] = identity ? float(std::min(v, 1.0)) : float(evaluate(v, adjustments));
+        double out = basicIdentity ? std::min(v, 1.0) : evaluateBasic(v, adjustments);
+        if (!curveIdentity)
+            out = std::pow(double(spline(float(std::pow(out, 1.0 / kGamma)))), kGamma);
+        m_table[i] = float(out);
     }
 }
 
-void ToneCurve::applyHuePreserving(float* rgb) const
+void ToneLut::applyHuePreserving(float* rgb) const
 {
     const float hi = std::max({rgb[0], rgb[1], rgb[2]});
     const float lo = std::min({rgb[0], rgb[1], rgb[2]});

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/Curve.h"
+
 #include <array>
 #include <string>
 
@@ -32,6 +34,7 @@ struct BasicAdjustments {
 // snapshots of it. The RAW file itself is never changed.
 struct EditState {
     BasicAdjustments basic;
+    ToneCurve toneCurve;
     std::string appliedPreset; // name of the last preset applied, if any
 
     bool operator==(const EditState&) const = default;

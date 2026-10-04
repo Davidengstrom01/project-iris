@@ -16,6 +16,8 @@
 #include "ui/PhotoSession.h"
 #include "ui/PresetPanel.h"
 #include "ui/Theme.h"
+#include "ui/HistogramWidget.h"
+#include "ui/ToneCurvePanel.h"
 
 #include <QApplication>
 #include <QCryptographicHash>
@@ -226,7 +228,7 @@ private slots:
         QCOMPARE(w.document->edits(), saved);
 
         // A custom preset with only some settings, applied to another photo.
-        Preset custom = presetFromAdjustments("Bright & Warm", w.document->edits().basic, {"exposure", "shadows"});
+        Preset custom = presetFromEdits("Bright & Warm", w.document->edits(), {"exposure", "shadows"});
         custom.values["exposure"] = 0.6f;
         QCOMPARE(library.save(custom, "My Presets"), QString());
         QVERIFY(QFile::exists(PresetLibrary::defaultUserDirectory() + "/My Presets/bright-warm.json"));
@@ -242,6 +244,48 @@ private slots:
         QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
         QCOMPARE(w.document->edits().basic.exposure, 0.0f);
         QVERIFY(!w.document->isDirty());
+    }
+
+    void toneCurve()
+    {
+        Window w;
+        QVERIFY(QTest::qWaitForWindowActive(&w.window));
+        QVERIFY(w.open(m_photoB));
+        auto* curvePanel = w.window.findChild<ui::ToneCurvePanel*>();
+        auto* histogram = w.window.findChild<ui::HistogramWidget*>();
+        QVERIFY(curvePanel && histogram);
+        QTRY_VERIFY(histogram->hasData());
+        QVERIFY(w.document->edits().toneCurve.isIdentity());
+
+        // Picking the S-curve preset is one undoable step.
+        QSignalSpy previews(w.session, &ui::PhotoSession::previewReady);
+        ToneCurve s;
+        s.rgb = sCurve();
+        emit curvePanel->curveChosen(s);
+        QCOMPARE(w.document->edits().toneCurve.rgb, sCurve());
+        QCOMPARE(w.document->undoLabel(), QString("Tone Curve Preset"));
+        QVERIFY(previews.wait(5000));
+
+        // Dragging a point is interactive and merges into one step.
+        ToneCurve dragged = s;
+        for (float y : {0.82f, 0.84f, 0.86f}) {
+            dragged.rgb[3].y = y;
+            curvePanel->setCurve(dragged);
+            emit curvePanel->curveEdited(dragged);
+        }
+        QCOMPARE(w.document->undoLabel(), QString("Tone Curve"));
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(w.document->edits().toneCurve.rgb, sCurve());
+        QCOMPARE(curvePanel->curve().rgb, sCurve()); // panel follows undo
+        QTest::qWait(700);
+        saveScreenshot(w.window, "06-s-curve.png");
+        saveScreenshot(*curvePanel, "07-curve-panel.png");
+
+        // Saved with the photo and restored on reopen.
+        QTest::keyClick(&w.window, Qt::Key_S, Qt::ControlModifier);
+        Window again;
+        QVERIFY(again.open(m_photoB));
+        QCOMPARE(again.document->edits().toneCurve.rgb, sCurve());
     }
 
     void beforeAfter()

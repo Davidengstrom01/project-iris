@@ -4,6 +4,7 @@
 #include "core/Image.h"
 #include "core/PhotoMetadata.h"
 #include "export/Exporter.h"
+#include "rendering/Histogram.h"
 
 #include <QImage>
 #include <QObject>
@@ -62,6 +63,8 @@ signals:
     void loadingStarted(const QString& path);
     void metadataReady(const iris::PhotoMetadata& metadata);
     void previewReady(const QImage& preview, const QSize& fullSize);
+    // Histogram of the preview on screen.
+    void histogramReady(const iris::Histogram& histogram);
     void beforePreviewReady(const QImage& preview);
     void beforeFullReady(const QImage& image);
     void fullImageReady(const QImage& image);
@@ -72,6 +75,7 @@ signals:
 private:
     enum Level { Draft, Preview, Full, LevelCount };
     struct DecodeResult;
+    struct RenderResult;
     struct RenderSlot {
         bool busy = false;
         bool pending = false;
@@ -82,7 +86,7 @@ private:
     void handleDecoded(quint64 generation, bool fullResolution, const DecodeResult& result);
     void requestRender(Level level);
     void startRender(Level level);
-    void handleRendered(Level level, quint64 version, const QImage& image);
+    void handleRendered(Level level, quint64 version, const RenderResult& result);
     void renderBefore(Level level);
     std::shared_ptr<const ImageF> source(Level level) const;
     bool isCurrent(quint64 generation) const { return generation == m_generation->load(); }

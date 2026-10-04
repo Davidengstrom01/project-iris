@@ -116,7 +116,8 @@ EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const Edit
     if (a.shadows != 0 || a.highlights != 0)
         base.emplace(*input, luma);
 
-    const ToneCurve curve(a);
+    // Hue-preserving steps compose, so the basic tone and the RGB curve share one table.
+    const ToneLut curve(a, edits.toneCurve);
     const Presence presence{a.saturation / 100.0f, a.vibrance / 100.0f};
 
     const int bits = options.bitsPerChannel == 16 ? 16 : 8;

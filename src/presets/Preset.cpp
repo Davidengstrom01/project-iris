@@ -1,6 +1,7 @@
 #include "presets/Preset.h"
 
 #include "core/ColorScience.h"
+#include "persistence/EditStateJson.h"
 
 #include <QJsonValue>
 
@@ -23,19 +24,23 @@ EditState applyPreset(const EditState& state, const Preset& preset)
     if (preset.tintShift)
         a.whiteBalance.tint += *preset.tintShift;
     a = sanitized(a);
+    if (preset.toneCurve)
+        result.toneCurve = *preset.toneCurve;
     result.appliedPreset = preset.name;
     return result;
 }
 
-Preset presetFromAdjustments(const std::string& name, const BasicAdjustments& adjustments,
-                             const std::vector<std::string>& keys)
+Preset presetFromEdits(const std::string& name, const EditState& edits, const std::vector<std::string>& keys)
 {
     Preset preset;
     preset.name = name;
-    BasicAdjustments copy = adjustments;
-    for (const std::string& key : keys)
-        if (const AdjustmentField* field = findAdjustmentField(key))
+    BasicAdjustments copy = edits.basic;
+    for (const std::string& key : keys) {
+        if (key == kToneCurveKey)
+            preset.toneCurve = edits.toneCurve;
+        else if (const AdjustmentField* field = findAdjustmentField(key))
             preset.values[key] = field->value(copy);
+    }
     return preset;
 }
 
@@ -55,6 +60,8 @@ QJsonObject presetToJson(const Preset& preset)
     if (preset.order != 0)
         json.insert("order", preset.order);
     json.insert("adjustments", adjustments);
+    if (preset.toneCurve)
+        json.insert("toneCurve", toneCurveToJson(*preset.toneCurve));
     return json;
 }
 
@@ -78,6 +85,11 @@ Preset presetFromJson(const QJsonObject& json)
         preset.temperatureShift = float(adjustments.value("temperatureShift").toDouble());
     if (adjustments.value("tintShift").isDouble())
         preset.tintShift = float(adjustments.value("tintShift").toDouble());
+    if (json.contains("toneCurve")) {
+        preset.toneCurve = readToneCurve(json.value("toneCurve"));
+        if (!preset.toneCurve)
+            throw std::runtime_error("invalid tone curve");
+    }
     return preset;
 }
 

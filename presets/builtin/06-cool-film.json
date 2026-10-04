@@ -3,8 +3,15 @@
   "name": "Cool Film",
   "order": 6,
   "adjustments": {
-    "contrast": 8, "highlights": -18, "shadows": 10,
-    "whites": -4, "blacks": 12, "vibrance": 6, "saturation": -12,
-    "temperatureShift": -14, "tintShift": -3
-  }
+    "contrast": 8,
+    "highlights": -18,
+    "shadows": 10,
+    "whites": -4,
+    "blacks": 4,
+    "vibrance": 6,
+    "saturation": -12,
+    "temperatureShift": -14,
+    "tintShift": -3
+  },
+  "toneCurve": {"points": [[0, 0.04], [0.25, 0.23], [0.5, 0.5], [0.75, 0.78], [1, 0.97]]}
 }

@@ -17,8 +17,8 @@
 
 namespace iris::ui {
 
-SavePresetDialog::SavePresetDialog(const BasicAdjustments& adjustments, const QStringList& folders, QWidget* parent)
-    : QDialog(parent), m_adjustments(adjustments)
+SavePresetDialog::SavePresetDialog(const EditState& edits, const QStringList& folders, QWidget* parent)
+    : QDialog(parent), m_edits(edits)
 {
     setWindowTitle(tr("Save Preset"));
     setMinimumWidth(380);
@@ -41,6 +41,7 @@ SavePresetDialog::SavePresetDialog(const BasicAdjustments& adjustments, const QS
         {tr("Whites"), {"whites"}},           {tr("Blacks"), {"blacks"}},
         {tr("White Balance"), {"temperature", "tint"}},
         {tr("Vibrance"), {"vibrance"}},       {tr("Saturation"), {"saturation"}},
+        {tr("Tone Curve"), {kToneCurveKey}},
     };
     QSettings settings;
     auto* include = new QGroupBox(tr("Include"), this);
@@ -104,7 +105,7 @@ Preset SavePresetDialog::preset() const
     for (const auto& [box, groupKeys] : m_groups)
         if (box->isChecked())
             keys.insert(keys.end(), groupKeys.begin(), groupKeys.end());
-    return presetFromAdjustments(m_name->text().trimmed().toStdString(), m_adjustments, keys);
+    return presetFromEdits(m_name->text().trimmed().toStdString(), m_edits, keys);
 }
 
 QString SavePresetDialog::folder() const

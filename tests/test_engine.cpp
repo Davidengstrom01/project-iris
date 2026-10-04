@@ -2,6 +2,7 @@
 
 #include "core/ColorScience.h"
 #include "export/Exporter.h"
+#include "rendering/Histogram.h"
 #include "rendering/Pipeline.h"
 #include "rendering/Resample.h"
 #include "rendering/Tone.h"
@@ -151,7 +152,7 @@ private slots:
                     a.contrast = contrast;
                     a.whites = whites;
                     a.blacks = blacks;
-                    const ToneCurve curve(a);
+                    const ToneLut curve(a, ToneCurve{});
                     float previous = -1;
                     for (int i = 0; i <= 4000; ++i) {
                         const float v = curve(i / 1000.0f);
@@ -161,7 +162,7 @@ private slots:
                     }
                 }
         // Neutral curve is the identity below white.
-        const ToneCurve identity{BasicAdjustments{}};
+        const ToneLut identity{BasicAdjustments{}, ToneCurve{}};
         QVERIFY(std::abs(identity(0.18f) - 0.18f) < 1e-5f);
         QCOMPARE(identity(3.0f), 1.0f);
     }
@@ -221,6 +222,75 @@ private slots:
             const int b = large.data8[(750 * 2000 + int(fx * 2000)) * 3];
             QVERIFY2(std::abs(a - b) <= 2, qPrintable(QString("%1 vs %2 at %3").arg(a).arg(b).arg(fx)));
         }
+    }
+
+    // --- Tone curve -------------------------------------------------------------
+
+    void curveSplinePassesThroughPointsWithoutOvershoot()
+    {
+        const CurveSpline linear(linearCurve());
+        for (float x : {0.0f, 0.3f, 0.77f, 1.0f})
+            QVERIFY(std::abs(linear(x) - x) < 1e-6f);
+
+        const CurvePoints s = sCurve();
+        const CurveSpline spline(s);
+        for (const CurvePoint& p : s)
+            QVERIFY(std::abs(spline(p.x) - p.y) < 1e-5f);
+        float previous = -1;
+        for (int i = 0; i <= 1000; ++i) { // monotone data gives a monotone curve
+            const float y = spline(i / 1000.0f);
+            QVERIFY(y >= previous);
+            previous = y;
+        }
+
+        // A sharp step must not ring above or below its points.
+        const CurveSpline step({{0, 0}, {0.45f, 0.1f}, {0.55f, 0.9f}, {1, 1}});
+        for (int i = 0; i <= 1000; ++i) {
+            const float y = step(i / 1000.0f);
+            QVERIFY(y >= 0 && y <= 1);
+        }
+        QVERIFY(step(0.3f) <= 0.1f + 1e-6f);
+        QVERIFY(step(0.7f) >= 0.9f - 1e-6f);
+    }
+
+    void curvesAreNormalised()
+    {
+        QCOMPARE(normalizedCurve({{1, 1}, {0.5f, 0.6f}, {0, 0}}), CurvePoints({{0, 0}, {0.5f, 0.6f}, {1, 1}}));
+        QCOMPARE(normalizedCurve({{0, 0}}), linearCurve());                         // too few points
+        QCOMPARE(normalizedCurve({{0, 0}, {0.5f, 2}, {1, 1}})[1].y, 1.0f);           // clamped
+        QCOMPARE(normalizedCurve({{0, 0}, {0.5f, 0.5f}, {0.502f, 0.6f}, {1, 1}}).size(), std::size_t(3));
+        QVERIFY(isLinear(linearCurve()));
+        QVERIFY(!isLinear(sCurve()));
+    }
+
+    void sCurveAddsContrast()
+    {
+        EditState edits = neutral();
+        edits.toneCurve.rgb = sCurve();
+        QVERIFY(renderPixel(0.03f, 0.03f, 0.03f, edits)[0] < renderPixel(0.03f, 0.03f, 0.03f)[0] - 3);
+        QVERIFY(renderPixel(0.5f, 0.5f, 0.5f, edits)[0] > renderPixel(0.5f, 0.5f, 0.5f)[0] + 3);
+        QCOMPARE(renderPixel(1, 1, 1, edits)[0], 255);
+        QCOMPARE(renderPixel(0, 0, 0, edits)[0], 0);
+
+        edits.toneCurve.rgb = inverseSCurve();
+        QVERIFY(renderPixel(0.03f, 0.03f, 0.03f, edits)[0] > renderPixel(0.03f, 0.03f, 0.03f)[0] + 3);
+
+        // A lifted black point fades blacks.
+        edits.toneCurve.rgb = {{0, 0.1f}, {1, 1}};
+        QVERIFY(renderPixel(0, 0, 0, edits)[0] > 12); // 0.1 in gamma 2.2 is ~19/255 in sRGB
+    }
+
+    void histogramCountsEveryPixel()
+    {
+        EncodedImage image(4, 2, 8);
+        std::fill(image.data8.begin(), image.data8.end(), 100);
+        image.data8[0] = 255; // one pixel with a red channel at 255
+        const Histogram h = computeHistogram(image);
+        QCOMPARE(h.pixels, std::uint64_t(8));
+        QCOMPARE(h.green[100], 8u);
+        QCOMPARE(h.red[100], 7u);
+        QCOMPARE(h.red[255], 1u);
+        QCOMPARE(h.luminance[100], 7u);
     }
 
     // --- Presence ---------------------------------------------------------------

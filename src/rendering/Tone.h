@@ -8,12 +8,13 @@
 
 namespace iris {
 
-// Global tone curve built from Contrast, Whites and Blacks. Maps scene-linear values
-// to display-linear [0, 1]; the shaping happens in a gamma 2.2 perceptual space.
-// With all three sliders at zero it is the identity, clipped at 1.
-class ToneCurve {
+// The global tone mapping as one lookup table from scene-linear values to display-linear
+// [0, 1]: Contrast, Whites and Blacks, followed by the user's RGB tone curve. Both are
+// shaped in a gamma 2.2 perceptual space. With everything neutral it is the identity,
+// clipped at 1.
+class ToneLut {
 public:
-    explicit ToneCurve(const BasicAdjustments& adjustments);
+    ToneLut(const BasicAdjustments& adjustments, const ToneCurve& curve);
 
     float operator()(float v) const
     {
@@ -29,8 +30,8 @@ public:
     // one, which keeps hue stable (the technique used by Adobe's DNG reference renderer).
     void applyHuePreserving(float* rgb) const;
 
-    // The curve evaluated directly (no table), for tests.
-    static double evaluate(double v, const BasicAdjustments& adjustments);
+    // Contrast / Whites / Blacks evaluated directly (no table, no tone curve), for tests.
+    static double evaluateBasic(double v, const BasicAdjustments& adjustments);
 
 private:
     std::vector<float> m_table;

@@ -21,10 +21,12 @@ namespace iris::ui {
 
 class DevelopPanel;
 class EditDocument;
+class HistogramWidget;
 class InfoPanel;
 class LibraryPanel;
 class PhotoSession;
 class PresetPanel;
+class ToneCurvePanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -57,6 +59,9 @@ private:
 
     // Records an edit made by anything but a slider drag (presets, white balance, reset).
     void commitEdit(const iris::EditState& state, const QString& label);
+    // Shows edits in the panels (without emitting edit signals).
+    void showEdits(const iris::EditState& edits);
+    void setEditingEnabled(bool enabled);
     void applyWhiteBalance(const std::optional<iris::WhiteBalance>& wb);
     void applyPreset(const iris::Preset& preset);
     void setCompareMode(ImageView::CompareMode mode);
@@ -71,6 +76,8 @@ private:
     LibraryPanel* m_library;
     PresetPanel* m_presets;
     DevelopPanel* m_develop;
+    ToneCurvePanel* m_curvePanel;
+    HistogramWidget* m_histogram;
     InfoPanel* m_info;
     QLabel* m_zoomLabel;
     QLabel* m_sizeLabel;

@@ -19,7 +19,7 @@ class SavePresetDialog : public QDialog {
     Q_OBJECT
 
 public:
-    SavePresetDialog(const iris::BasicAdjustments& adjustments, const QStringList& folders, QWidget* parent = nullptr);
+    SavePresetDialog(const iris::EditState& edits, const QStringList& folders, QWidget* parent = nullptr);
 
     Preset preset() const;
     QString folder() const;
@@ -27,7 +27,7 @@ public:
 private:
     void updateOkButton();
 
-    BasicAdjustments m_adjustments;
+    EditState m_edits;
     QLineEdit* m_name;
     QComboBox* m_folder;
     QList<QPair<QCheckBox*, std::vector<std::string>>> m_groups; // checkbox -> adjustment keys

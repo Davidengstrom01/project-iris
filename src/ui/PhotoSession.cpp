@@ -27,6 +27,11 @@ struct PhotoSession::DecodeResult {
     bool cancelled = false;
 };
 
+struct PhotoSession::RenderResult {
+    QImage image;
+    Histogram histogram;
+};
+
 PhotoSession::PhotoSession(QObject* parent) : QObject(parent)
 {
     m_settleTimer.setSingleShot(true);
@@ -226,23 +231,29 @@ void PhotoSession::startRender(Level level)
     const quint64 generation = m_generation->load();
     const quint64 version = m_editVersion;
 
-    QtConcurrent::run([image, asShot, edits] {
+    const bool withHistogram = level != Full;
+    QtConcurrent::run([image, asShot, edits, withHistogram] {
+        RenderResult result;
         try {
-            return toQImage(render(*image, asShot, edits, {}));
+            const EncodedImage encoded = render(*image, asShot, edits, {});
+            if (withHistogram)
+                result.histogram = computeHistogram(encoded);
+            result.image = toQImage(encoded);
         } catch (const std::exception&) {
-            return QImage();
         }
-    }).then(this, [this, level, generation, version](const QImage& result) {
+        return result;
+    }).then(this, [this, level, generation, version](const RenderResult& result) {
         m_slots[level].busy = false;
-        if (isCurrent(generation) && !result.isNull())
+        if (isCurrent(generation) && !result.image.isNull())
             handleRendered(level, version, result);
         if (m_slots[level].pending)
             requestRender(level);
     });
 }
 
-void PhotoSession::handleRendered(Level level, quint64 version, const QImage& image)
+void PhotoSession::handleRendered(Level level, quint64 version, const RenderResult& result)
 {
+    const QImage& image = result.image;
     if (level == Full) {
         if (version == m_editVersion) {
             m_fullVersion = version;
@@ -255,6 +266,7 @@ void PhotoSession::handleRendered(Level level, quint64 version, const QImage& im
         m_shownVersion = version;
         m_shownLevel = level;
         emit previewReady(image, QSize(m_metadata.width, m_metadata.height));
+        emit histogramReady(result.histogram);
     }
     if (level == Preview && version == m_editVersion && m_fullNeeded && m_fullVersion != version)
         requestRender(Full);

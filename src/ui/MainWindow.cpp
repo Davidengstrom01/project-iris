@@ -6,11 +6,13 @@
 #include "ui/DevelopPanel.h"
 #include "ui/EditDocument.h"
 #include "ui/ExportDialog.h"
+#include "ui/HistogramWidget.h"
 #include "ui/InfoPanel.h"
 #include "ui/LibraryPanel.h"
 #include "ui/PhotoSession.h"
 #include "ui/PresetPanel.h"
 #include "ui/SavePresetDialog.h"
+#include "ui/ToneCurvePanel.h"
 
 #include <QAbstractSpinBox>
 #include <QAction>
@@ -171,17 +173,20 @@ void MainWindow::createLayout()
     m_library = new LibraryPanel(this);
     m_view = new ImageView(this);
 
-    // Right panel: presets, develop controls, then photo info.
+    // Right panel: histogram, presets, develop controls, then photo info.
     auto* rightContent = new QWidget;
     rightContent->setObjectName("sidePanel");
     auto* rightLayout = new QVBoxLayout(rightContent);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setContentsMargins(0, 6, 0, 0);
+    m_histogram = new HistogramWidget(rightContent);
+    rightLayout->addWidget(m_histogram);
     m_presets = new PresetPanel(m_presetLibrary.get(), rightContent);
-    m_presets->setEnabled(false);
     rightLayout->addWidget(m_presets);
     m_develop = new DevelopPanel(rightContent);
-    m_develop->setEnabled(false);
     rightLayout->addWidget(m_develop);
+    m_curvePanel = new ToneCurvePanel(rightContent);
+    rightLayout->addWidget(m_curvePanel);
+    setEditingEnabled(false);
     m_info = new InfoPanel(rightContent);
     rightLayout->addWidget(m_info);
     rightLayout->addStretch();
@@ -235,8 +240,8 @@ void MainWindow::connectSession()
     connect(m_session, &PhotoSession::loadingStarted, this, [this](const QString& path) {
         m_view->beginLoading();
         m_develop->setEyedropperActive(false);
-        m_develop->setEnabled(false);
-        m_presets->setEnabled(false);
+        setEditingEnabled(false);
+        m_histogram->clear();
         m_exportAction->setEnabled(false);
         m_info->clear();
         m_sizeLabel->clear();
@@ -246,8 +251,7 @@ void MainWindow::connectSession()
         m_info->setMetadata(m, QFileInfo(m_session->path()).fileName());
         // Restore saved edits before anything is rendered.
         const QString warning = m_document->load(m_session->path(), m.asShot);
-        m_develop->setEnabled(true);
-        m_presets->setEnabled(true);
+        setEditingEnabled(true);
         if (!warning.isEmpty())
             QMessageBox::warning(this, tr("Saved edits"),
                                  tr("The saved edits for this photo could not be read and were ignored.\n%1")
@@ -263,6 +267,10 @@ void MainWindow::connectSession()
             statusBar()->clearMessage();
     });
     connect(m_session, &PhotoSession::fullImageReady, m_view, &ImageView::setFullImage);
+    connect(m_session, &PhotoSession::histogramReady, this, [this](const iris::Histogram& histogram) {
+        m_histogram->setHistogram(histogram);
+        m_curvePanel->setHistogram(histogram.luminance);
+    });
     connect(m_session, &PhotoSession::beforePreviewReady, m_view, &ImageView::setBeforePreview);
     connect(m_session, &PhotoSession::beforeFullReady, m_view, &ImageView::setBeforeFullImage);
     connect(m_session, &PhotoSession::loadFailed, this, [this](const QString& path, const QString& message) {
@@ -285,7 +293,7 @@ void MainWindow::connectEditing()
 {
     // Load, undo and redo replace the edits wholesale.
     connect(m_document, &EditDocument::editsReplaced, this, [this](const iris::EditState& edits) {
-        m_develop->setAdjustments(edits.basic, m_document->defaults().basic.whiteBalance);
+        showEdits(edits);
         m_session->setEdits(edits, PhotoSession::Update::Immediate);
     });
     connect(m_document, &EditDocument::stateChanged, this, &MainWindow::updateEditActions);
@@ -328,6 +336,20 @@ void MainWindow::connectEditing()
     });
     connect(m_view, &ImageView::pickCancelled, this, [this] { m_develop->setEyedropperActive(false); });
 
+    // Dragging curve points is interactive (one undo step per gesture); presets and reset
+    // are separate steps.
+    connect(m_curvePanel, &ToneCurvePanel::curveEdited, this, [this](const iris::ToneCurve& curve) {
+        EditState state = m_document->edits();
+        state.toneCurve = curve;
+        m_document->edit(state, tr("Tone Curve"), true);
+        m_session->setEdits(m_document->edits(), PhotoSession::Update::Interactive);
+    });
+    connect(m_curvePanel, &ToneCurvePanel::curveChosen, this, [this](const iris::ToneCurve& curve) {
+        EditState state = m_document->edits();
+        state.toneCurve = curve;
+        commitEdit(state, tr("Tone Curve Preset"));
+    });
+
     connect(m_presets, &PresetPanel::presetActivated, this, &MainWindow::applyPreset);
     connect(m_presets, &PresetPanel::savePresetRequested, this, &MainWindow::showSavePresetDialog);
 }
@@ -337,8 +359,21 @@ void MainWindow::commitEdit(const EditState& state, const QString& label)
     if (!m_document->isLoaded())
         return;
     m_document->edit(state, label);
-    m_develop->setAdjustments(m_document->edits().basic, m_document->defaults().basic.whiteBalance);
+    showEdits(m_document->edits());
     m_session->setEdits(m_document->edits(), PhotoSession::Update::Immediate);
+}
+
+void MainWindow::showEdits(const EditState& edits)
+{
+    m_develop->setAdjustments(edits.basic, m_document->defaults().basic.whiteBalance);
+    m_curvePanel->setCurve(edits.toneCurve);
+}
+
+void MainWindow::setEditingEnabled(bool enabled)
+{
+    m_presets->setEnabled(enabled);
+    m_develop->setEnabled(enabled);
+    m_curvePanel->setEnabled(enabled);
 }
 
 void MainWindow::applyWhiteBalance(const std::optional<iris::WhiteBalance>& wb)
@@ -361,7 +396,7 @@ void MainWindow::showSavePresetDialog()
 {
     if (!m_document->isLoaded())
         return;
-    SavePresetDialog dialog(m_document->edits().basic, m_presetLibrary->userFolders(), this);
+    SavePresetDialog dialog(m_document->edits(), m_presetLibrary->userFolders(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
     const Preset preset = dialog.preset();

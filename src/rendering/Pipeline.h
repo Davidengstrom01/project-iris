@@ -16,11 +16,12 @@ struct RenderOptions {
 //     -> resize
 //     -> white balance + exposure           (one 3x3 matrix, scene-linear)
 //     -> highlights / shadows                (edge-aware local gain, scene-linear)
-//     -> contrast / whites / blacks          (hue-preserving tone curve -> display-linear)
+//     -> contrast / whites / blacks          (hue-preserving -> display-linear)
+//     -> RGB tone curve                      (hue-preserving, perceptual space)
 //     -> vibrance / saturation
 //     -> output colour transform (sRGB)
 //
-// Later stages (tone curve editor, HSL, masks, crop, detail) slot in between.
+// Later stages (HSL, masks, crop, detail) slot in between.
 // asShot is the white balance the source was decoded with.
 EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const EditState& edits,
                     const RenderOptions& options);

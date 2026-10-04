@@ -13,8 +13,8 @@ Original RAW files are only ever opened read-only.
 | 1 — Foundation | Window, open, RAW decode, preview, zoom/pan, metadata, export | ✅ done |
 | 2 — Basic development | Exposure, contrast, highlights/shadows, whites/blacks, WB (+ auto, eyedropper), vibrance/saturation | ✅ done |
 | 3 — Editing state + presets | Sidecars, undo/redo, before/after, presets | ✅ done |
-| 4 — Tone curve | | next |
-| 5 — HSL | | |
+| 4 — Tone curve | Histogram, RGB point curve, S / inverse-S presets | ✅ done |
+| 5 — HSL | | next |
 | 6 — Masking | | |
 | 7 — Crop & polish | | |
 | 8 — Packaging | AppImage, `.deb` | |
@@ -71,6 +71,7 @@ IRIS_TEST_RAW=/path/to/photo.ARW ctest --test-dir build --output-on-failure
 | Double-click | Toggle fit / 100% at the cursor |
 | Double-click a slider name | Reset that slider |
 | Esc | Cancel the white-balance eyedropper |
+| Tone curve: click / drag / double-click | Add / move / remove a point (also right-click or Delete) |
 
 ## Architecture
 
@@ -102,7 +103,8 @@ source (linear Rec.2020, as-shot WB)
   -> resize
   -> white balance + exposure        one 3x3 matrix (Bradford adaptation), scene-linear
   -> highlights / shadows            edge-aware local gain (guided-filter base layer)
-  -> contrast / whites / blacks      tone curve, applied hue-preservingly -> display-linear
+  -> contrast / whites / blacks      hue-preserving tone mapping -> display-linear
+  -> RGB tone curve                  monotone spline, hue-preserving (same lookup table)
   -> vibrance / saturation
   -> sRGB output transform           LittleCMS
 ```
@@ -113,6 +115,10 @@ source (linear Rec.2020, as-shot WB)
 - **Highlights/Shadows** work on regions, not single pixels: a guided filter computed at a
   fixed 1024 px resolution decides how bright each region is, so local detail is kept, edges
   get no halos, and the preview matches the full-resolution export.
+- The **tone curve** is a monotone cubic spline through the control points (no overshoot
+  between points), applied in gamma 2.2 space. Because both it and the basic tone mapping
+  keep hue, they are combined into one lookup table. Only the RGB curve exists so far;
+  `ToneCurve` is ready for separate red/green/blue curves.
 - With every slider at zero the render is neutral (no hidden "look" curve).
 
 ### Editing state, undo and sidecars
@@ -123,7 +129,8 @@ file. **Ctrl+S** saves the edits next to it:
 
 ```
 photo.ARW
-photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...}}
+photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
+                     "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]}}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name

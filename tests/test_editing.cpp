@@ -7,6 +7,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
@@ -110,6 +111,7 @@ private slots:
         edits.basic.contrast = 10;
         edits.basic.whiteBalance = {5600, 4};
         edits.appliedPreset = "Warm Film";
+        edits.toneCurve.rgb = {{0, 0}, {0.25f, 0.20f}, {0.5f, 0.52f}, {0.75f, 0.82f}, {1, 1}};
         QCOMPARE(writeSidecar(sidecarPathFor(raw), raw, edits), QString());
 
         const SidecarResult read = readSidecar(raw, defaultEditState(kAsShot));
@@ -125,6 +127,9 @@ private slots:
         QCOMPARE(json.value("originalFilename").toString(), QString("photo.ARW"));
         QCOMPARE(json.value("adjustments").toObject().value("exposure").toDouble(), 0.5);
         QCOMPARE(json.value("adjustments").toObject().value("temperature").toDouble(), 5600.0);
+        const QJsonArray points = json.value("toneCurve").toObject().value("points").toArray();
+        QCOMPARE(points.size(), 5);
+        QCOMPARE(points[2].toArray()[1].toDouble(), double(0.52f));
     }
 
     void sidecarMissingValuesUseDefaults()
@@ -137,6 +142,7 @@ private slots:
         QCOMPARE(read.edits->basic.exposure, 5.0f); // clamped
         QCOMPARE(read.edits->basic.shadows, 25.0f);
         QCOMPARE(read.edits->basic.whiteBalance, kAsShot);
+        QVERIFY(read.edits->toneCurve.isIdentity());
     }
 
     void unreadableSidecarsAreReported()
@@ -203,13 +209,25 @@ private slots:
 
     void selectivePresetAndJson()
     {
-        BasicAdjustments a;
-        a.exposure = 0.3f;
-        a.contrast = 12;
-        a.whiteBalance = {6100, 7};
-        const Preset preset = presetFromAdjustments("Mine", a, {"contrast", "temperature", "tint"});
+        EditState edits;
+        edits.basic.exposure = 0.3f;
+        edits.basic.contrast = 12;
+        edits.basic.whiteBalance = {6100, 7};
+        edits.toneCurve.rgb = sCurve();
+        const Preset preset = presetFromEdits("Mine", edits, {"contrast", "temperature", "tint"});
         QCOMPARE(preset.values.size(), std::size_t(3));
         QVERIFY(!preset.values.count("exposure"));
+        QVERIFY(!preset.toneCurve.has_value());
+
+        const Preset withCurve = presetFromEdits("Curve", edits, {kToneCurveKey});
+        QVERIFY(withCurve.values.empty());
+        QCOMPARE(withCurve.toneCurve->rgb, sCurve());
+        QCOMPARE(presetFromJson(presetToJson(withCurve)), withCurve);
+        // Applying a preset without a curve keeps the photo's curve; one with a curve sets it.
+        EditState photo = defaultEditState(kAsShot);
+        photo.toneCurve.rgb = inverseSCurve();
+        QCOMPARE(applyPreset(photo, preset).toneCurve.rgb, inverseSCurve());
+        QCOMPARE(applyPreset(photo, withCurve).toneCurve.rgb, sCurve());
 
         const Preset back = presetFromJson(presetToJson(preset));
         QCOMPARE(back, preset);

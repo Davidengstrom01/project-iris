@@ -64,6 +64,8 @@ SidecarResult readSidecarFile(const QString& sidecarPath, const EditState& defau
     }
     EditState edits = defaults;
     readAdjustments(json->value("adjustments").toObject(), edits.basic);
+    if (const auto curve = readToneCurve(json->value("toneCurve")))
+        edits.toneCurve = *curve;
     edits.appliedPreset = json->value("preset").toString().toStdString();
     result.edits = edits;
     return result;
@@ -83,6 +85,7 @@ QString writeSidecar(const QString& sidecarPath, const QString& rawPath, const E
     if (!edits.appliedPreset.empty())
         json.insert("preset", QString::fromStdString(edits.appliedPreset));
     json.insert("adjustments", adjustmentsToJson(edits.basic));
+    json.insert("toneCurve", toneCurveToJson(edits.toneCurve));
 
     QSaveFile file(sidecarPath);
     if (!file.open(QIODevice::WriteOnly))

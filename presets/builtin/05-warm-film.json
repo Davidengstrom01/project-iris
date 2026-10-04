@@ -3,8 +3,15 @@
   "name": "Warm Film",
   "order": 5,
   "adjustments": {
-    "contrast": 10, "highlights": -20, "shadows": 12,
-    "whites": -6, "blacks": 14, "vibrance": 12, "saturation": -8,
-    "temperatureShift": 14, "tintShift": 4
-  }
+    "contrast": 10,
+    "highlights": -20,
+    "shadows": 12,
+    "whites": -6,
+    "blacks": 4,
+    "vibrance": 12,
+    "saturation": -8,
+    "temperatureShift": 14,
+    "tintShift": 4
+  },
+  "toneCurve": {"points": [[0, 0.03], [0.25, 0.22], [0.5, 0.5], [0.75, 0.8], [1, 0.98]]}
 }
