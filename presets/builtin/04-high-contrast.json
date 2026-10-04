@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "High Contrast",
+  "order": 4,
+  "adjustments": {
+    "contrast": 45, "highlights": -15, "shadows": -5,
+    "whites": 18, "blacks": -22, "vibrance": 12
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Monochrome",
+  "order": 9,
+  "adjustments": {
+    "contrast": 25, "highlights": -10, "shadows": 8,
+    "whites": 10, "blacks": -10, "vibrance": 0, "saturation": -100
+  }
+}

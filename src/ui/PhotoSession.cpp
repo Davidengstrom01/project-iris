@@ -3,6 +3,7 @@
 #include "raw/RawDecoder.h"
 #include "rendering/Pipeline.h"
 #include "rendering/Resample.h"
+#include "rendering/WhiteBalanceTools.h"
 
 #include <QFuture>
 #include <QtConcurrent/QtConcurrentRun>
@@ -11,28 +12,27 @@ namespace iris::ui {
 
 namespace {
 
-// Long edge of the screen preview rendering. Large enough for a 4K window in fit mode.
-constexpr int kPreviewLongEdge = 3200;
+constexpr int kDraftLongEdge = 1280;
+constexpr int kPreviewLongEdge = 3200; // large enough for a 4K window in fit mode
+constexpr int kSettleDelayMs = 200;    // pause after the last edit before rendering the sharp preview
 
 } // namespace
 
-struct PhotoSession::PreviewResult {
+struct PhotoSession::DecodeResult {
     PhotoMetadata metadata;
-    QImage preview;
+    std::shared_ptr<const ImageF> draft;
+    std::shared_ptr<const ImageF> preview;
+    std::shared_ptr<const ImageF> full;
     QString error;
     bool cancelled = false;
 };
 
-struct PhotoSession::FullResult {
-    std::shared_ptr<const ImageF> source;
-    PhotoMetadata metadata;
-    QImage preview;
-    QImage full;
-    QString error;
-    bool cancelled = false;
-};
-
-PhotoSession::PhotoSession(QObject* parent) : QObject(parent) {}
+PhotoSession::PhotoSession(QObject* parent) : QObject(parent)
+{
+    m_settleTimer.setSingleShot(true);
+    m_settleTimer.setInterval(kSettleDelayMs);
+    connect(&m_settleTimer, &QTimer::timeout, this, [this] { requestRender(Preview); });
+}
 
 PhotoSession::~PhotoSession()
 {
@@ -44,83 +44,234 @@ void PhotoSession::open(const QString& path)
     const quint64 generation = ++*m_generation;
     m_path = path;
     m_metadata = {};
-    m_loaded = false;
+    m_edits = {};
+    m_editsReady = false;
     m_fullLoaded = false;
+    m_draftSource.reset();
+    m_previewSource.reset();
     m_fullSource.reset();
+    ++m_editVersion;
+    m_shownVersion = 0;
+    m_shownLevel = -1;
+    m_fullVersion = 0;
+    m_settleTimer.stop();
+    m_beforeRendered = {};
     emit loadingStarted(path);
 
     const std::string file = path.toStdString();
     const auto token = m_generation;
     const CancelCheck cancelled = [token, generation] { return token->load() != generation; };
 
-    QtConcurrent::run([file, cancelled] {
-        PreviewResult r;
-        try {
-            DecodedRaw decoded = decodeRaw(file, DecodeQuality::Preview, cancelled);
-            r.metadata = decoded.metadata;
-            r.preview = toQImage(render(decoded.image, {.maxLongEdge = kPreviewLongEdge}));
-        } catch (const DecodeCancelled&) {
-            r.cancelled = true;
-        } catch (const std::exception& e) {
-            r.error = QString::fromStdString(e.what());
-        }
-        return r;
-    }).then(this, [this, generation](const PreviewResult& r) { handlePreview(generation, r); });
-
-    QtConcurrent::run([file, cancelled] {
-        FullResult r;
-        try {
-            DecodedRaw decoded = decodeRaw(file, DecodeQuality::Full, cancelled);
-            r.metadata = decoded.metadata;
-            auto source = std::make_shared<const ImageF>(std::move(decoded.image));
-            if (cancelled())
-                throw DecodeCancelled();
-            r.preview = toQImage(render(*source, {.maxLongEdge = kPreviewLongEdge}));
-            r.full = toQImage(render(*source, {}));
-            r.source = std::move(source);
-        } catch (const DecodeCancelled&) {
-            r.cancelled = true;
-        } catch (const std::exception& e) {
-            r.error = QString::fromStdString(e.what());
-        }
-        return r;
-    }).then(this, [this, generation](const FullResult& r) { handleFull(generation, r); });
-}
-
-void PhotoSession::handlePreview(quint64 generation, const PreviewResult& r)
-{
-    // A late half-size preview must not replace the sharper one from the full decode.
-    if (!isCurrent(generation) || r.cancelled || m_fullLoaded)
-        return;
-    if (!r.error.isEmpty()) {
-        emit loadFailed(m_path, r.error);
-        return;
+    for (const bool fullResolution : {false, true}) {
+        QtConcurrent::run([file, cancelled, fullResolution] {
+            DecodeResult r;
+            try {
+                DecodedRaw decoded =
+                    decodeRaw(file, fullResolution ? DecodeQuality::Full : DecodeQuality::Preview, cancelled);
+                r.metadata = decoded.metadata;
+                auto image = std::make_shared<const ImageF>(std::move(decoded.image));
+                r.preview = std::make_shared<const ImageF>(downscaleToFit(*image, kPreviewLongEdge));
+                r.draft = std::make_shared<const ImageF>(downscaleToFit(*r.preview, kDraftLongEdge));
+                if (fullResolution)
+                    r.full = std::move(image);
+            } catch (const DecodeCancelled&) {
+                r.cancelled = true;
+            } catch (const std::exception& e) {
+                r.error = QString::fromStdString(e.what());
+            }
+            return r;
+        }).then(this, [this, generation, fullResolution](const DecodeResult& r) {
+            handleDecoded(generation, fullResolution, r);
+        });
     }
-    m_metadata = r.metadata;
-    m_loaded = true;
-    emit metadataReady(m_metadata);
-    emit previewReady(r.preview, QSize(m_metadata.width, m_metadata.height));
 }
 
-void PhotoSession::handleFull(quint64 generation, const FullResult& r)
+void PhotoSession::handleDecoded(quint64 generation, bool fullResolution, const DecodeResult& r)
 {
     if (!isCurrent(generation) || r.cancelled)
         return;
     if (!r.error.isEmpty()) {
-        // The preview decode reports the error unless it has already succeeded.
-        if (m_loaded)
+        // Report once: from the half-size decode, or from the full one if the first succeeded.
+        if (!fullResolution || isLoaded())
             emit loadFailed(m_path, r.error);
         return;
     }
-    m_fullLoaded = true;
-    m_fullSource = r.source;
+    // A late half-size decode must not replace sources derived from the full decode.
+    if (!fullResolution && m_fullLoaded)
+        return;
+
+    m_draftSource = r.draft;
+    m_previewSource = r.preview;
+    if (fullResolution) {
+        m_fullSource = r.full;
+        m_fullLoaded = true;
+    }
+    const bool firstResult = !m_metadata.width;
     m_metadata = r.metadata;
-    const bool first = !m_loaded;
-    m_loaded = true;
-    if (first)
+    if (fullResolution) {
+        m_metadata.width = r.full->width;
+        m_metadata.height = r.full->height;
+    }
+    // Listeners respond by calling setEdits() with the photo's saved edits.
+    if (firstResult)
         emit metadataReady(m_metadata);
-    emit previewReady(r.preview, r.full.size());
-    emit fullImageReady(r.full);
+    if (!m_editsReady)
+        setEdits(defaultEditState(m_metadata.asShot));
+
+    requestRender(Preview);
+    if (fullResolution && m_fullNeeded)
+        requestRender(Full);
+    if (m_beforeNeeded) {
+        renderBefore(Preview);
+        if (fullResolution && m_fullNeeded)
+            renderBefore(Full);
+    }
+}
+
+void PhotoSession::setEdits(const EditState& edits, Update update)
+{
+    if (m_editsReady && edits == m_edits)
+        return;
+    m_edits = edits;
+    m_editsReady = true;
+    ++m_editVersion;
+    if (m_fullVersion != 0) {
+        m_fullVersion = 0;
+        emit fullImageInvalidated();
+    }
+    requestRender(Draft);
+    if (update == Update::Interactive) {
+        m_settleTimer.start();
+    } else {
+        m_settleTimer.stop();
+        requestRender(Preview);
+    }
+}
+
+void PhotoSession::setFullResolutionNeeded(bool needed)
+{
+    m_fullNeeded = needed;
+    if (needed && m_fullVersion != m_editVersion)
+        requestRender(Full);
+    if (needed && m_beforeNeeded)
+        renderBefore(Full);
+}
+
+void PhotoSession::setBeforeNeeded(bool needed)
+{
+    m_beforeNeeded = needed;
+    if (needed) {
+        renderBefore(Preview);
+        if (m_fullNeeded)
+            renderBefore(Full);
+    }
+}
+
+void PhotoSession::renderBefore(Level level)
+{
+    // The unedited photo does not change while editing; render each source only once.
+    const std::shared_ptr<const ImageF> image = source(level);
+    if (!image || m_beforeRendered[level] == image.get())
+        return;
+    m_beforeRendered[level] = image.get();
+    const WhiteBalance asShot = m_metadata.asShot;
+    const quint64 generation = m_generation->load();
+    QtConcurrent::run([image, asShot] {
+        try {
+            return toQImage(render(*image, asShot, defaultEditState(asShot), {}));
+        } catch (const std::exception&) {
+            return QImage();
+        }
+    }).then(this, [this, level, generation](const QImage& result) {
+        if (!isCurrent(generation) || result.isNull())
+            return;
+        if (level == Full)
+            emit beforeFullReady(result);
+        else
+            emit beforePreviewReady(result);
+    });
+}
+
+std::shared_ptr<const ImageF> PhotoSession::source(Level level) const
+{
+    switch (level) {
+    case Draft: return m_draftSource;
+    case Preview: return m_previewSource;
+    default: return m_fullSource;
+    }
+}
+
+void PhotoSession::requestRender(Level level)
+{
+    if (!m_editsReady || !source(level))
+        return;
+    RenderSlot& slot = m_slots[level];
+    if (!slot.busy)
+        startRender(level);
+    else if (slot.version != m_editVersion || slot.source != source(level).get())
+        slot.pending = true; // re-render once the current one finishes
+}
+
+void PhotoSession::startRender(Level level)
+{
+    RenderSlot& slot = m_slots[level];
+    const std::shared_ptr<const ImageF> image = source(level);
+    slot.busy = true;
+    slot.pending = false;
+    slot.version = m_editVersion;
+    slot.source = image.get();
+
+    const WhiteBalance asShot = m_metadata.asShot;
+    const EditState edits = m_edits;
+    const quint64 generation = m_generation->load();
+    const quint64 version = m_editVersion;
+
+    QtConcurrent::run([image, asShot, edits] {
+        try {
+            return toQImage(render(*image, asShot, edits, {}));
+        } catch (const std::exception&) {
+            return QImage();
+        }
+    }).then(this, [this, level, generation, version](const QImage& result) {
+        m_slots[level].busy = false;
+        if (isCurrent(generation) && !result.isNull())
+            handleRendered(level, version, result);
+        if (m_slots[level].pending)
+            requestRender(level);
+    });
+}
+
+void PhotoSession::handleRendered(Level level, quint64 version, const QImage& image)
+{
+    if (level == Full) {
+        if (version == m_editVersion) {
+            m_fullVersion = version;
+            emit fullImageReady(image);
+        }
+        return;
+    }
+    // Show a result unless something newer, or the same edits at higher quality, is on screen.
+    if (version > m_shownVersion || (version == m_shownVersion && level >= m_shownLevel)) {
+        m_shownVersion = version;
+        m_shownLevel = level;
+        emit previewReady(image, QSize(m_metadata.width, m_metadata.height));
+    }
+    if (level == Preview && version == m_editVersion && m_fullNeeded && m_fullVersion != version)
+        requestRender(Full);
+}
+
+std::optional<WhiteBalance> PhotoSession::autoWhiteBalance() const
+{
+    if (!m_draftSource)
+        return std::nullopt;
+    return estimateWhiteBalance(*m_draftSource, m_metadata.asShot);
+}
+
+std::optional<WhiteBalance> PhotoSession::whiteBalanceAt(const QPointF& position) const
+{
+    if (!m_previewSource)
+        return std::nullopt;
+    return sampleWhiteBalance(*m_previewSource, position.x(), position.y(), m_metadata.asShot);
 }
 
 void PhotoSession::exportTo(const QString& outputPath, const ExportSettings& settings)
@@ -128,14 +279,16 @@ void PhotoSession::exportTo(const QString& outputPath, const ExportSettings& set
     const std::shared_ptr<const ImageF> source = m_fullSource;
     const std::string rawPath = m_path.toStdString();
     const std::string output = outputPath.toStdString();
+    const WhiteBalance asShot = m_metadata.asShot;
+    const EditState edits = m_edits;
 
-    QtConcurrent::run([source, rawPath, output, settings]() -> QString {
+    QtConcurrent::run([source, rawPath, output, settings, asShot, edits]() -> QString {
         try {
             // Export always uses the full-resolution decode of the original RAW.
             std::shared_ptr<const ImageF> image = source;
             if (!image)
                 image = std::make_shared<const ImageF>(decodeRaw(rawPath, DecodeQuality::Full).image);
-            exportImage(*image, settings, output);
+            exportImage(*image, asShot, edits, settings, output);
             return {};
         } catch (const std::exception& e) {
             return QString::fromStdString(e.what());

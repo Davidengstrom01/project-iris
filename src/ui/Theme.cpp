@@ -66,6 +66,25 @@ void applyDarkTheme(QApplication& app)
         QSplitter::handle { background: #111214; }
         QScrollArea { border: none; background: #232428; }
 
+        QLabel#sectionLabel { color: #c4c6cb; font-weight: 600; padding: 6px 12px 2px 12px; }
+        QLabel#sliderLabel { color: #b4b6bb; }
+        QDoubleSpinBox#sliderValue { background: transparent; color: #d8d9dc; border: none; padding: 0; }
+        QDoubleSpinBox#sliderValue:focus { background: #17181a; }
+        QPushButton#smallButton {
+            background: #2c2e32; color: #c4c6cb; border: 1px solid #383a3f; border-radius: 3px;
+            padding: 2px 8px; font-size: 11px;
+        }
+        QPushButton#smallButton:hover { background: #35373c; }
+        QPushButton#smallButton:checked { background: #34528a; border-color: #4c8df6; color: white; }
+        QPushButton#smallButton:disabled { color: #5c5f65; }
+
+        QSlider::groove:horizontal { height: 3px; background: #3a3c41; border-radius: 1px; }
+        QSlider::handle:horizontal {
+            background: #c9cbd0; width: 11px; height: 11px; margin: -4px 0; border-radius: 5px;
+        }
+        QSlider::handle:horizontal:hover { background: #ffffff; }
+        QSlider::handle:horizontal:disabled { background: #55585e; }
+
         QStatusBar { background: #232428; border-top: 1px solid #111214; color: #9ea1a7; }
         QStatusBar::item { border: none; }
         QStatusBar QLabel { color: #9ea1a7; padding: 0 8px; }

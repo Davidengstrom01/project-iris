@@ -1,11 +1,13 @@
 #include "ui/LibraryPanel.h"
 
+#include "persistence/Sidecar.h"
 #include "raw/RawDecoder.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
+#include <QPainter>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
@@ -21,6 +23,22 @@ QStringList rawNameFilters()
         filters << "*." + e << "*." + e.toUpper();
     }
     return filters;
+}
+
+// A small dot marks photos that have saved edits; unedited photos get an empty icon of
+// the same size so that names stay aligned.
+QIcon editedIcon(bool edited)
+{
+    QPixmap pixmap(10, 10);
+    pixmap.fill(Qt::transparent);
+    if (edited) {
+        QPainter p(&pixmap);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x4c, 0x8d, 0xf6));
+        p.drawEllipse(QRectF(2, 2, 6, 6));
+    }
+    return QIcon(pixmap);
 }
 
 } // namespace
@@ -44,6 +62,7 @@ LibraryPanel::LibraryPanel(QWidget* parent) : QWidget(parent)
     m_list = new QListWidget(this);
     m_list->setObjectName("photoList");
     m_list->setUniformItemSizes(true);
+    m_list->setIconSize(QSize(10, 10));
     layout->addWidget(m_list, 1);
 
     connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
@@ -68,6 +87,10 @@ void LibraryPanel::showFolderOf(const QString& filePath)
         for (const QFileInfo& file : files) {
             auto* item = new QListWidgetItem(file.fileName(), m_list);
             item->setData(Qt::UserRole, file.absoluteFilePath());
+            const bool edited = QFileInfo::exists(sidecarPathFor(file.absoluteFilePath()));
+            item->setIcon(editedIcon(edited));
+            if (edited)
+                item->setToolTip(tr("Has saved edits"));
         }
     }
 
@@ -79,6 +102,21 @@ void LibraryPanel::showFolderOf(const QString& filePath)
             m_list->setCurrentIndex(m_list->model()->index(i, 0));
             m_list->scrollToItem(m_list->item(i));
             break;
+        }
+    }
+}
+
+} // namespace iris::ui
+
+namespace iris::ui {
+
+void LibraryPanel::setEdited(const QString& filePath, bool edited)
+{
+    for (int i = 0; i < m_list->count(); ++i) {
+        QListWidgetItem* item = m_list->item(i);
+        if (item->data(Qt::UserRole).toString() == filePath) {
+            item->setIcon(editedIcon(edited));
+            item->setToolTip(edited ? tr("Has saved edits") : QString());
         }
     }
 }

@@ -1,7 +1,10 @@
 #include "raw/RawDecoder.h"
 
+#include "core/ColorScience.h"
+
 #include <libraw/libraw.h>
 
+#include <cmath>
 #include <memory>
 
 namespace iris {
@@ -38,6 +41,27 @@ int exifOrientationFromFlip(int flip)
     }
 }
 
+// The camera's as-shot white balance: the colour a neutral surface had in camera RGB
+// (inverse of the WB multipliers), converted to XYZ through the camera matrix.
+WhiteBalance asShotWhiteBalance(const libraw_colordata_t& color)
+{
+    const float* mul = color.cam_mul[0] > 0 && color.cam_mul[1] > 0 && color.cam_mul[2] > 0 ? color.cam_mul
+                                                                                             : color.pre_mul;
+    const Mat3 xyzToCamera = {
+        color.cam_xyz[0][0], color.cam_xyz[0][1], color.cam_xyz[0][2],
+        color.cam_xyz[1][0], color.cam_xyz[1][1], color.cam_xyz[1][2],
+        color.cam_xyz[2][0], color.cam_xyz[2][1], color.cam_xyz[2][2],
+    };
+    const Mat3 cameraToXyz = inverse(xyzToCamera);
+    if (mul[0] > 0 && mul[1] > 0 && mul[2] > 0 && std::isfinite(cameraToXyz[0])) {
+        const Vec3 xyz = cameraToXyz * Vec3{1.0 / mul[0], 1.0 / mul[1], 1.0 / mul[2]};
+        const double sum = xyz[0] + xyz[1] + xyz[2];
+        if (std::isfinite(sum) && sum > 0 && xyz[1] > 0)
+            return whiteBalanceFromWhitePoint(chromaticity(xyz));
+    }
+    return whiteBalanceFromWhitePoint(kD65);
+}
+
 PhotoMetadata extractMetadata(const libraw_data_t& data)
 {
     PhotoMetadata m;
@@ -57,6 +81,7 @@ PhotoMetadata extractMetadata(const libraw_data_t& data)
     const bool swapped = data.sizes.flip & 4;
     m.width = swapped ? data.sizes.height : data.sizes.width;
     m.height = swapped ? data.sizes.width : data.sizes.height;
+    m.asShot = asShotWhiteBalance(data.color);
     return m;
 }
 

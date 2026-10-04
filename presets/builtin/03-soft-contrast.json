@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Soft Contrast",
+  "order": 3,
+  "adjustments": {
+    "contrast": -12, "highlights": -25, "shadows": 20,
+    "whites": -5, "blacks": 10, "vibrance": 8
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Cool Film",
+  "order": 6,
+  "adjustments": {
+    "contrast": 8, "highlights": -18, "shadows": 10,
+    "whites": -4, "blacks": 12, "vibrance": 6, "saturation": -12,
+    "temperatureShift": -14, "tintShift": -3
+  }
+}

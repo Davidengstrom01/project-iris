@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/EditState.h"
 #include "core/Image.h"
 
 namespace iris {
@@ -11,10 +12,17 @@ struct RenderOptions {
 
 // The single rendering pipeline shared by the interactive preview and export:
 //
-//   working-space source -> [resize] -> output colour transform (sRGB)
+//   source (linear Rec.2020, as-shot white balance)
+//     -> resize
+//     -> white balance + exposure           (one 3x3 matrix, scene-linear)
+//     -> highlights / shadows                (edge-aware local gain, scene-linear)
+//     -> contrast / whites / blacks          (hue-preserving tone curve -> display-linear)
+//     -> vibrance / saturation
+//     -> output colour transform (sRGB)
 //
-// Editing stages (adjustments, tone curve, colour, masks, crop, detail) are inserted
-// between the resize and the output transform as they are implemented.
-EncodedImage render(const ImageF& source, const RenderOptions& options);
+// Later stages (tone curve editor, HSL, masks, crop, detail) slot in between.
+// asShot is the white balance the source was decoded with.
+EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const EditState& edits,
+                    const RenderOptions& options);
 
 } // namespace iris

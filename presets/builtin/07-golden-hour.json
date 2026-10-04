@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Golden Hour",
+  "order": 7,
+  "adjustments": {
+    "exposure": 0.1, "contrast": 12, "highlights": -30, "shadows": 18,
+    "whites": 5, "blacks": -4, "vibrance": 25, "saturation": 5,
+    "temperatureShift": 28, "tintShift": 8
+  }
+}

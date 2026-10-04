@@ -1,5 +1,6 @@
 #include "ui/ImageView.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -32,6 +33,28 @@ void ImageView::beginLoading()
 {
     m_loading = true;
     m_message.clear();
+    m_beforePreview = QImage();
+    m_beforeFull = QImage();
+    update();
+}
+
+void ImageView::setCompareMode(CompareMode mode)
+{
+    m_compare = mode;
+    setMouseTracking(mode == CompareMode::Split); // to show the divider's resize cursor
+    updateCursor();
+    update();
+}
+
+void ImageView::setBeforePreview(const QImage& preview)
+{
+    m_beforePreview = preview;
+    update();
+}
+
+void ImageView::setBeforeFullImage(const QImage& full)
+{
+    m_beforeFull = full;
     update();
 }
 
@@ -74,6 +97,19 @@ void ImageView::setFullImage(const QImage& full)
             fitToWindow();
     }
     update();
+}
+
+bool ImageView::needsFullResolution() const
+{
+    if (m_preview.isNull() || m_imageSize.isEmpty() || m_fit)
+        return false;
+    return m_zoom > double(m_preview.width()) / m_imageSize.width() * 1.001;
+}
+
+void ImageView::setPickMode(bool enabled)
+{
+    m_pickMode = enabled;
+    updateCursor();
 }
 
 double ImageView::fitZoom() const
@@ -170,7 +206,9 @@ void ImageView::clampCenter()
 
 void ImageView::updateCursor()
 {
-    if (m_panning)
+    if (m_pickMode)
+        setCursor(Qt::CrossCursor);
+    else if (m_panning)
         setCursor(Qt::ClosedHandCursor);
     else if (!m_imageSize.isEmpty() && !m_fit)
         setCursor(Qt::OpenHandCursor);
@@ -183,29 +221,75 @@ void ImageView::notifyZoom()
     emit zoomChanged(m_zoom, m_fit);
 }
 
+void ImageView::drawPhoto(QPainter& p, const QImage& preview, const QImage& full, const QRectF& clip)
+{
+    if (preview.isNull())
+        return;
+    const double s = logicalScale();
+    const QRectF imageRect(viewCenter() - m_center * s, QSizeF(m_imageSize) * s);
+    const QRectF visible = imageRect.intersected(clip);
+    if (visible.isEmpty())
+        return;
+
+    // Use the full-resolution rendering once the preview would be magnified.
+    const double previewZoom = double(preview.width()) / m_imageSize.width();
+    const bool useFull = !full.isNull() && m_zoom > previewZoom * 1.001;
+    const QImage& image = useFull ? full : preview;
+
+    const double sx = image.width() / imageRect.width();
+    const double sy = image.height() / imageRect.height();
+    const QRectF source((visible.x() - imageRect.x()) * sx, (visible.y() - imageRect.y()) * sy, visible.width() * sx,
+                        visible.height() * sy);
+    // Smooth when shrinking or mildly enlarging; show crisp pixels when inspecting detail.
+    p.setRenderHint(QPainter::SmoothPixmapTransform, m_zoom < 2.0);
+    p.drawImage(visible, image, source);
+}
+
+void ImageView::drawLabel(QPainter& p, const QString& text, const QPointF& anchor, Qt::Alignment side)
+{
+    const QRectF textRect = p.fontMetrics().boundingRect(text).adjusted(-10, -4, 10, 4);
+    QRectF pill(anchor, textRect.size());
+    if (side & Qt::AlignRight)
+        pill.moveRight(anchor.x());
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path;
+    path.addRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+    p.fillPath(path, QColor(0, 0, 0, 160));
+    p.setPen(QColor(0xe6, 0xe7, 0xea));
+    p.drawText(pill, Qt::AlignCenter, text);
+    p.restore();
+}
+
 void ImageView::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
     p.fillRect(rect(), kBackground);
 
     if (!m_preview.isNull() && !m_imageSize.isEmpty()) {
-        const double s = logicalScale();
-        const QRectF imageRect(viewCenter() - m_center * s, QSizeF(m_imageSize) * s);
-        const QRectF visible = imageRect.intersected(QRectF(rect()));
+        // While the "before" rendering is not ready yet, show the edited one.
+        const bool haveBefore = !m_beforePreview.isNull();
+        const QImage& beforePreview = haveBefore ? m_beforePreview : m_preview;
+        const QImage& beforeFull = haveBefore ? m_beforeFull : m_full;
 
-        // Use the full-resolution rendering once the preview would be magnified.
-        const double previewZoom = double(m_preview.width()) / m_imageSize.width();
-        const bool useFull = !m_full.isNull() && m_zoom > previewZoom * 1.001;
-        const QImage& image = useFull ? m_full : m_preview;
-
-        if (!visible.isEmpty()) {
-            const double sx = image.width() / imageRect.width();
-            const double sy = image.height() / imageRect.height();
-            const QRectF source((visible.x() - imageRect.x()) * sx, (visible.y() - imageRect.y()) * sy,
-                                visible.width() * sx, visible.height() * sy);
-            // Smooth when shrinking or mildly enlarging; show crisp pixels when inspecting detail.
-            p.setRenderHint(QPainter::SmoothPixmapTransform, m_zoom < 2.0);
-            p.drawImage(visible, image, source);
+        switch (m_compare) {
+        case CompareMode::Off:
+            drawPhoto(p, m_preview, m_full, rect());
+            break;
+        case CompareMode::Before:
+            drawPhoto(p, beforePreview, beforeFull, rect());
+            drawLabel(p, tr("Before"), QPointF(12, 12), Qt::AlignLeft);
+            break;
+        case CompareMode::Split: {
+            const double x = splitX();
+            drawPhoto(p, beforePreview, beforeFull, QRectF(0, 0, x, height()));
+            drawPhoto(p, m_preview, m_full, QRectF(x, 0, width() - x, height()));
+            p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+            p.drawLine(QPointF(x, 0), QPointF(x, height()));
+            drawLabel(p, tr("Before"), QPointF(x - 10, 12), Qt::AlignRight);
+            drawLabel(p, tr("After"), QPointF(x + 10, 12), Qt::AlignLeft);
+            break;
+        }
         }
     } else if (!m_message.isEmpty() && !m_loading) {
         p.setPen(QColor(0x7d, 0x80, 0x86));
@@ -249,6 +333,17 @@ void ImageView::wheelEvent(QWheelEvent* event)
 
 void ImageView::mousePressEvent(QMouseEvent* event)
 {
+    if (m_pickMode && event->button() == Qt::LeftButton && !m_imageSize.isEmpty()) {
+        const QPointF p = widgetToImage(event->position());
+        if (p.x() >= 0 && p.y() >= 0 && p.x() < m_imageSize.width() && p.y() < m_imageSize.height())
+            emit pointPicked(QPointF(p.x() / m_imageSize.width(), p.y() / m_imageSize.height()));
+        return;
+    }
+    if (m_compare == CompareMode::Split && event->button() == Qt::LeftButton &&
+        std::abs(event->position().x() - splitX()) <= 8) {
+        m_draggingSplit = true;
+        return;
+    }
     if (event->button() == Qt::LeftButton && !m_fit && !m_imageSize.isEmpty()) {
         m_panning = true;
         m_lastPanPos = event->position();
@@ -258,6 +353,17 @@ void ImageView::mousePressEvent(QMouseEvent* event)
 
 void ImageView::mouseMoveEvent(QMouseEvent* event)
 {
+    if (m_draggingSplit) {
+        m_split = std::clamp(event->position().x() / std::max(1, width()), 0.02, 0.98);
+        update();
+        return;
+    }
+    if (m_compare == CompareMode::Split && !m_panning && !m_pickMode) {
+        if (std::abs(event->position().x() - splitX()) <= 8)
+            setCursor(Qt::SplitHCursor);
+        else
+            updateCursor();
+    }
     if (!m_panning)
         return;
     const QPointF delta = event->position() - m_lastPanPos;
@@ -269,15 +375,28 @@ void ImageView::mouseMoveEvent(QMouseEvent* event)
 
 void ImageView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (m_draggingSplit) {
+        m_draggingSplit = false;
+        return;
+    }
     if (event->button() == Qt::LeftButton && m_panning) {
         m_panning = false;
         updateCursor();
     }
 }
 
+void ImageView::keyPressEvent(QKeyEvent* event)
+{
+    if (m_pickMode && event->key() == Qt::Key_Escape) {
+        emit pickCancelled();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
 void ImageView::mouseDoubleClickEvent(QMouseEvent* event)
 {
-    if (event->button() != Qt::LeftButton || m_imageSize.isEmpty())
+    if (m_pickMode || event->button() != Qt::LeftButton || m_imageSize.isEmpty())
         return;
     if (m_fit)
         setZoom(1.0, event->position());

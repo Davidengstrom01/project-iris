@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Muted",
+  "order": 8,
+  "adjustments": {
+    "contrast": -10, "highlights": -15, "shadows": 10,
+    "blacks": 12, "vibrance": -15, "saturation": -25
+  }
+}

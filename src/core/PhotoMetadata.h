@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/EditState.h"
+
 #include <cstdint>
 #include <string>
 
@@ -18,6 +20,7 @@ struct PhotoMetadata {
     int orientation = 1;        // EXIF orientation (1 = normal, 3 = 180°, 6 = 90° CW, 8 = 90° CCW)
     int width = 0;              // full-resolution size after orientation is applied
     int height = 0;
+    WhiteBalance asShot;        // white balance the decoded image is rendered with
 };
 
 } // namespace iris

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/EditState.h"
 #include "core/Image.h"
 
 #include <QImage>
@@ -20,10 +21,11 @@ struct ExportSettings {
 // Lower-case file extension without the dot ("jpg", "png", "tif").
 const char* fileExtension(ExportFormat format);
 
-// Renders the full-resolution working-space source through the pipeline and writes it
+// Renders the full-resolution source with the edits through the pipeline and writes it
 // as an sRGB file with an embedded ICC profile. The write is atomic: an existing file is
 // only replaced once the new one has been written completely. Throws std::runtime_error.
-void exportImage(const ImageF& fullResolutionSource, const ExportSettings& settings, const std::string& outputPath);
+void exportImage(const ImageF& fullResolutionSource, const WhiteBalance& asShot, const EditState& edits,
+                 const ExportSettings& settings, const std::string& outputPath);
 
 // Wraps an encoded sRGB image in a QImage (deep copy) tagged with the sRGB colour space.
 QImage toQImage(const EncodedImage& image);

@@ -2,3 +2,6 @@
 /.cache/
 compile_commands.json
 *.user
+
+# Local planning notes
+/PLAN.md

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Warm Film",
+  "order": 5,
+  "adjustments": {
+    "contrast": 10, "highlights": -20, "shadows": 12,
+    "whites": -6, "blacks": 14, "vibrance": 12, "saturation": -8,
+    "temperatureShift": 14, "tintShift": 4
+  }
+}

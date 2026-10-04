@@ -60,7 +60,8 @@ QImage toQImage(const EncodedImage& image)
     return result;
 }
 
-void exportImage(const ImageF& fullResolutionSource, const ExportSettings& settings, const std::string& outputPath)
+void exportImage(const ImageF& fullResolutionSource, const WhiteBalance& asShot, const EditState& edits,
+                 const ExportSettings& settings, const std::string& outputPath)
 {
     if (fullResolutionSource.empty())
         throw std::runtime_error("Nothing to export");
@@ -68,7 +69,7 @@ void exportImage(const ImageF& fullResolutionSource, const ExportSettings& setti
     RenderOptions options;
     options.maxLongEdge = settings.longEdge;
     options.bitsPerChannel = settings.format == ExportFormat::Jpeg ? 8 : settings.bitsPerChannel;
-    const QImage image = toQImage(render(fullResolutionSource, options));
+    const QImage image = toQImage(render(fullResolutionSource, asShot, edits, options));
 
     QSaveFile file(QString::fromStdString(outputPath));
     if (!file.open(QIODevice::WriteOnly))

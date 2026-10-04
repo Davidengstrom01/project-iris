@@ -17,6 +17,8 @@ public:
 
     // Shows the folder containing filePath and selects that file.
     void showFolderOf(const QString& filePath);
+    // Marks a photo as having saved edits (a sidecar file).
+    void setEdited(const QString& filePath, bool edited);
 
 signals:
     void photoActivated(const QString& path);
