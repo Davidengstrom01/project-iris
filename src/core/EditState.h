@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Curve.h"
+#include "core/Hsl.h"
 
 #include <array>
 #include <string>
@@ -35,6 +36,7 @@ struct BasicAdjustments {
 struct EditState {
     BasicAdjustments basic;
     ToneCurve toneCurve;
+    HslAdjustments hsl;
     std::string appliedPreset; // name of the last preset applied, if any
 
     bool operator==(const EditState&) const = default;

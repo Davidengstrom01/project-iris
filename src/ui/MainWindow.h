@@ -22,6 +22,7 @@ namespace iris::ui {
 class DevelopPanel;
 class EditDocument;
 class HistogramWidget;
+class HslPanel;
 class InfoPanel;
 class LibraryPanel;
 class PhotoSession;
@@ -77,6 +78,7 @@ private:
     PresetPanel* m_presets;
     DevelopPanel* m_develop;
     ToneCurvePanel* m_curvePanel;
+    HslPanel* m_hslPanel;
     HistogramWidget* m_histogram;
     InfoPanel* m_info;
     QLabel* m_zoomLabel;

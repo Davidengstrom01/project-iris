@@ -21,4 +21,10 @@ QJsonObject toneCurveToJson(const ToneCurve& curve);
 // Reads a tone curve object; returns nothing if `json` is not a valid curve.
 std::optional<ToneCurve> readToneCurve(const QJsonValue& json);
 
+// {"red": {"hue": 0, "saturation": -20, "luminance": 0}, ...}; neutral ranges are omitted.
+QJsonObject hslToJson(const HslAdjustments& hsl);
+
+// Reads HSL adjustments; missing ranges and values are 0.
+HslAdjustments readHsl(const QJsonValue& json);
+
 } // namespace iris

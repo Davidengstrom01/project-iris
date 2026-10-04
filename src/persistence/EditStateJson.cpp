@@ -48,4 +48,32 @@ std::optional<ToneCurve> readToneCurve(const QJsonValue& json)
     return curve;
 }
 
+QJsonObject hslToJson(const HslAdjustments& hsl)
+{
+    QJsonObject json;
+    for (int i = 0; i < kHslColorCount; ++i) {
+        const HslBand& band = hsl.bands[i];
+        if (band == HslBand{})
+            continue;
+        json.insert(QLatin1String(hslColorKey(HslColor(i))),
+                    QJsonObject{{"hue", double(band.hue)},
+                                {"saturation", double(band.saturation)},
+                                {"luminance", double(band.luminance)}});
+    }
+    return json;
+}
+
+HslAdjustments readHsl(const QJsonValue& json)
+{
+    HslAdjustments hsl;
+    const QJsonObject object = json.toObject();
+    for (int i = 0; i < kHslColorCount; ++i) {
+        const QJsonObject band = object.value(QLatin1String(hslColorKey(HslColor(i)))).toObject();
+        hsl.bands[i].hue = float(band.value("hue").toDouble(0));
+        hsl.bands[i].saturation = float(band.value("saturation").toDouble(0));
+        hsl.bands[i].luminance = float(band.value("luminance").toDouble(0));
+    }
+    return sanitized(hsl);
+}
+
 } // namespace iris

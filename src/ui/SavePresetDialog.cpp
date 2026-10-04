@@ -42,6 +42,7 @@ SavePresetDialog::SavePresetDialog(const EditState& edits, const QStringList& fo
         {tr("White Balance"), {"temperature", "tint"}},
         {tr("Vibrance"), {"vibrance"}},       {tr("Saturation"), {"saturation"}},
         {tr("Tone Curve"), {kToneCurveKey}},
+        {tr("Color (HSL)"), {kHslKey}},
     };
     QSettings settings;
     auto* include = new QGroupBox(tr("Include"), this);

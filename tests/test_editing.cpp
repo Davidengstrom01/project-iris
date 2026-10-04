@@ -112,6 +112,8 @@ private slots:
         edits.basic.whiteBalance = {5600, 4};
         edits.appliedPreset = "Warm Film";
         edits.toneCurve.rgb = {{0, 0}, {0.25f, 0.20f}, {0.5f, 0.52f}, {0.75f, 0.82f}, {1, 1}};
+        edits.hsl[HslColor::Blue] = {-10, -25, -40};
+        edits.hsl[HslColor::Orange].saturation = 15;
         QCOMPARE(writeSidecar(sidecarPathFor(raw), raw, edits), QString());
 
         const SidecarResult read = readSidecar(raw, defaultEditState(kAsShot));
@@ -130,6 +132,9 @@ private slots:
         const QJsonArray points = json.value("toneCurve").toObject().value("points").toArray();
         QCOMPARE(points.size(), 5);
         QCOMPARE(points[2].toArray()[1].toDouble(), double(0.52f));
+        const QJsonObject hsl = json.value("hsl").toObject();
+        QCOMPARE(hsl.keys(), QStringList({"blue", "orange"})); // neutral ranges are omitted
+        QCOMPARE(hsl.value("blue").toObject().value("luminance").toDouble(), -40.0);
     }
 
     void sidecarMissingValuesUseDefaults()
@@ -228,6 +233,15 @@ private slots:
         photo.toneCurve.rgb = inverseSCurve();
         QCOMPARE(applyPreset(photo, preset).toneCurve.rgb, inverseSCurve());
         QCOMPARE(applyPreset(photo, withCurve).toneCurve.rgb, sCurve());
+
+        // HSL is included as a whole when selected.
+        edits.hsl[HslColor::Green].hue = 30;
+        const Preset color = presetFromEdits("Color", edits, {kHslKey});
+        QCOMPARE(color.hsl->bands[int(HslColor::Green)].hue, 30.0f);
+        QCOMPARE(presetFromJson(presetToJson(color)), color);
+        photo.hsl[HslColor::Red].saturation = 50;
+        QCOMPARE(applyPreset(photo, color).hsl, edits.hsl);
+        QCOMPARE(applyPreset(photo, preset).hsl, photo.hsl); // presets without HSL keep it
 
         const Preset back = presetFromJson(presetToJson(preset));
         QCOMPARE(back, preset);

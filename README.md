@@ -14,8 +14,8 @@ Original RAW files are only ever opened read-only.
 | 2 — Basic development | Exposure, contrast, highlights/shadows, whites/blacks, WB (+ auto, eyedropper), vibrance/saturation | ✅ done |
 | 3 — Editing state + presets | Sidecars, undo/redo, before/after, presets | ✅ done |
 | 4 — Tone curve | Histogram, RGB point curve, S / inverse-S presets | ✅ done |
-| 5 — HSL | | next |
-| 6 — Masking | | |
+| 5 — HSL | Hue / saturation / luminance for eight colour ranges | ✅ done |
+| 6 — Masking | | next |
 | 7 — Crop & polish | | |
 | 8 — Packaging | AppImage, `.deb` | |
 
@@ -105,6 +105,7 @@ source (linear Rec.2020, as-shot WB)
   -> highlights / shadows            edge-aware local gain (guided-filter base layer)
   -> contrast / whites / blacks      hue-preserving tone mapping -> display-linear
   -> RGB tone curve                  monotone spline, hue-preserving (same lookup table)
+  -> HSL                             per colour range, in Oklab
   -> vibrance / saturation
   -> sRGB output transform           LittleCMS
 ```
@@ -119,6 +120,10 @@ source (linear Rec.2020, as-shot WB)
   between points), applied in gamma 2.2 space. Because both it and the basic tone mapping
   keep hue, they are combined into one lookup table. Only the RGB curve exists so far;
   `ToneCurve` is ready for separate red/green/blue curves.
+- **HSL** works in Oklab, a perceptual colour space where hue angles match how colours look
+  and lightness is separate from chroma. The eight ranges (red, orange, yellow, green,
+  aqua, blue, purple, magenta) are centred on reference sRGB colours; each pixel blends
+  smoothly between its two nearest ranges, and near-neutral pixels are left alone.
 - With every slider at zero the render is neutral (no hidden "look" curve).
 
 ### Editing state, undo and sidecars
@@ -130,7 +135,8 @@ file. **Ctrl+S** saves the edits next to it:
 ```
 photo.ARW
 photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
-                     "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]}}
+                     "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]},
+                     "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}}}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name

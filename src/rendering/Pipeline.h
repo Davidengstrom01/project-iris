@@ -18,10 +18,11 @@ struct RenderOptions {
 //     -> highlights / shadows                (edge-aware local gain, scene-linear)
 //     -> contrast / whites / blacks          (hue-preserving -> display-linear)
 //     -> RGB tone curve                      (hue-preserving, perceptual space)
+//     -> HSL: hue / saturation / luminance per colour range (Oklab)
 //     -> vibrance / saturation
 //     -> output colour transform (sRGB)
 //
-// Later stages (HSL, masks, crop, detail) slot in between.
+// Later stages (masks, crop, detail) slot in between.
 // asShot is the white balance the source was decoded with.
 EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const EditState& edits,
                     const RenderOptions& options);

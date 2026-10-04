@@ -26,6 +26,8 @@ EditState applyPreset(const EditState& state, const Preset& preset)
     a = sanitized(a);
     if (preset.toneCurve)
         result.toneCurve = *preset.toneCurve;
+    if (preset.hsl)
+        result.hsl = *preset.hsl;
     result.appliedPreset = preset.name;
     return result;
 }
@@ -38,6 +40,8 @@ Preset presetFromEdits(const std::string& name, const EditState& edits, const st
     for (const std::string& key : keys) {
         if (key == kToneCurveKey)
             preset.toneCurve = edits.toneCurve;
+        else if (key == kHslKey)
+            preset.hsl = edits.hsl;
         else if (const AdjustmentField* field = findAdjustmentField(key))
             preset.values[key] = field->value(copy);
     }
@@ -62,6 +66,8 @@ QJsonObject presetToJson(const Preset& preset)
     json.insert("adjustments", adjustments);
     if (preset.toneCurve)
         json.insert("toneCurve", toneCurveToJson(*preset.toneCurve));
+    if (preset.hsl)
+        json.insert("hsl", hslToJson(*preset.hsl));
     return json;
 }
 
@@ -90,6 +96,8 @@ Preset presetFromJson(const QJsonObject& json)
         if (!preset.toneCurve)
             throw std::runtime_error("invalid tone curve");
     }
+    if (json.value("hsl").isObject())
+        preset.hsl = readHsl(json.value("hsl"));
     return preset;
 }
 

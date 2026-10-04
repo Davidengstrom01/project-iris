@@ -2,6 +2,7 @@
 
 #include "core/ColorScience.h"
 #include "rendering/ColorTransform.h"
+#include "rendering/HslMixer.h"
 #include "rendering/Resample.h"
 #include "rendering/Tone.h"
 
@@ -118,6 +119,7 @@ EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const Edit
 
     // Hue-preserving steps compose, so the basic tone and the RGB curve share one table.
     const ToneLut curve(a, edits.toneCurve);
+    const HslMixer hsl(edits.hsl);
     const Presence presence{a.saturation / 100.0f, a.vibrance / 100.0f};
 
     const int bits = options.bitsPerChannel == 16 ? 16 : 8;
@@ -147,6 +149,8 @@ EncodedImage render(const ImageF& source, const WhiteBalance& asShot, const Edit
                 }
 
                 curve.applyHuePreserving(p);
+                if (hsl.active())
+                    hsl.apply(p);
                 if (presence.active())
                     presence.apply(p);
             }

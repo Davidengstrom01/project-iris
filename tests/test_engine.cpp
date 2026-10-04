@@ -3,6 +3,7 @@
 #include "core/ColorScience.h"
 #include "export/Exporter.h"
 #include "rendering/Histogram.h"
+#include "rendering/HslMixer.h"
 #include "rendering/Pipeline.h"
 #include "rendering/Resample.h"
 #include "rendering/Tone.h"
@@ -291,6 +292,78 @@ private slots:
         QCOMPARE(h.red[100], 7u);
         QCOMPARE(h.red[255], 1u);
         QCOMPARE(h.luminance[100], 7u);
+    }
+
+    // --- HSL ----------------------------------------------------------------------
+
+    void hslBandsAreInHueOrder()
+    {
+        const auto& c = HslMixer::bandCenters();
+        for (int i = 0; i + 1 < kHslColorCount; ++i)
+            QVERIFY2(c[i] < c[i + 1], qPrintable(QString("band %1: %2 >= %3").arg(i).arg(c[i]).arg(c[i + 1])));
+        QVERIFY(c[0] > 15 && c[0] < 45); // red sits around 29 degrees in Oklab
+    }
+
+    void hslLeavesNeutralsAndOtherColoursAlone()
+    {
+        EditState edits = neutral();
+        for (HslBand& band : edits.hsl.bands)
+            band = {60, -80, 50};
+        // Greys have no hue, so HSL must not touch them.
+        QCOMPARE(renderPixel(0.18f, 0.18f, 0.18f, edits), renderPixel(0.18f, 0.18f, 0.18f));
+
+        // Adjusting blue does not change red.
+        EditState blue = neutral();
+        blue.hsl[HslColor::Blue] = {50, -100, -100};
+        QCOMPARE(renderPixel(0.5f, 0.05f, 0.04f, blue), renderPixel(0.5f, 0.05f, 0.04f));
+    }
+
+    void hslAdjustsItsColour()
+    {
+        auto saturationOf = [](const std::array<int, 3>& px) {
+            const int hi = std::max({px[0], px[1], px[2]}), lo = std::min({px[0], px[1], px[2]});
+            return hi == 0 ? 0.0 : double(hi - lo) / hi;
+        };
+        const float sky[3] = {0.105f, 0.15f, 0.335f}; // a typical sky, sRGB (100, 150, 220) at half brightness
+
+        EditState desaturate = neutral();
+        desaturate.hsl[HslColor::Blue].saturation = -100;
+        QVERIFY(saturationOf(renderPixel(sky[0], sky[1], sky[2], desaturate)) < 0.12);
+
+        EditState darker = neutral();
+        darker.hsl[HslColor::Blue].luminance = -100;
+        const auto before = renderPixel(sky[0], sky[1], sky[2]);
+        const auto after = renderPixel(sky[0], sky[1], sky[2], darker);
+        QVERIFY(after[2] < before[2] - 20);
+
+        // Red hue +100 moves red towards orange (more green), -100 towards magenta (more blue).
+        EditState warmer = neutral();
+        warmer.hsl[HslColor::Red].hue = 100;
+        // (A red inside the sRGB gamut, sRGB (200, 40, 40), so the result is not clipped.)
+        const auto red = renderPixel(0.37f, 0.06f, 0.03f);
+        QVERIFY(renderPixel(0.37f, 0.06f, 0.03f, warmer)[1] > red[1] + 15);
+        warmer.hsl[HslColor::Red].hue = -100;
+        QVERIFY(renderPixel(0.37f, 0.06f, 0.03f, warmer)[2] > red[2] + 15);
+    }
+
+    void hslBlendsSmoothlyAroundTheHueCircle()
+    {
+        // Walk around the hue circle with one range desaturated: no sudden jumps.
+        HslAdjustments hsl;
+        hsl[HslColor::Green].saturation = -100;
+        hsl[HslColor::Yellow].luminance = 80;
+        const HslMixer mixer(hsl);
+        float previous[3] = {-1, -1, -1};
+        for (int deg = 0; deg <= 360; ++deg) {
+            const float h = deg * 3.14159265f / 180;
+            float rgb[3] = {0.3f + 0.2f * std::cos(h), 0.3f + 0.2f * std::cos(h - 2.094f),
+                            0.3f + 0.2f * std::cos(h + 2.094f)};
+            mixer.apply(rgb);
+            if (previous[0] >= 0)
+                for (int c = 0; c < 3; ++c)
+                    QVERIFY2(std::abs(rgb[c] - previous[c]) < 0.03f, qPrintable(QString("jump at %1 deg").arg(deg)));
+            std::copy(rgb, rgb + 3, previous);
+        }
     }
 
     // --- Presence ---------------------------------------------------------------

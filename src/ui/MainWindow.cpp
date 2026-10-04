@@ -7,6 +7,7 @@
 #include "ui/EditDocument.h"
 #include "ui/ExportDialog.h"
 #include "ui/HistogramWidget.h"
+#include "ui/HslPanel.h"
 #include "ui/InfoPanel.h"
 #include "ui/LibraryPanel.h"
 #include "ui/PhotoSession.h"
@@ -186,6 +187,8 @@ void MainWindow::createLayout()
     rightLayout->addWidget(m_develop);
     m_curvePanel = new ToneCurvePanel(rightContent);
     rightLayout->addWidget(m_curvePanel);
+    m_hslPanel = new HslPanel(rightContent);
+    rightLayout->addWidget(m_hslPanel);
     setEditingEnabled(false);
     m_info = new InfoPanel(rightContent);
     rightLayout->addWidget(m_info);
@@ -350,6 +353,18 @@ void MainWindow::connectEditing()
         commitEdit(state, tr("Tone Curve Preset"));
     });
 
+    connect(m_hslPanel, &HslPanel::hslEdited, this, [this](const iris::HslAdjustments& hsl, const QString& label) {
+        EditState state = m_document->edits();
+        state.hsl = hsl;
+        m_document->edit(state, label, true);
+        m_session->setEdits(m_document->edits(), PhotoSession::Update::Interactive);
+    });
+    connect(m_hslPanel, &HslPanel::resetRequested, this, [this] {
+        EditState state = m_document->edits();
+        state.hsl = {};
+        commitEdit(state, tr("Reset Color"));
+    });
+
     connect(m_presets, &PresetPanel::presetActivated, this, &MainWindow::applyPreset);
     connect(m_presets, &PresetPanel::savePresetRequested, this, &MainWindow::showSavePresetDialog);
 }
@@ -367,6 +382,7 @@ void MainWindow::showEdits(const EditState& edits)
 {
     m_develop->setAdjustments(edits.basic, m_document->defaults().basic.whiteBalance);
     m_curvePanel->setCurve(edits.toneCurve);
+    m_hslPanel->setHsl(edits.hsl);
 }
 
 void MainWindow::setEditingEnabled(bool enabled)
@@ -374,6 +390,7 @@ void MainWindow::setEditingEnabled(bool enabled)
     m_presets->setEnabled(enabled);
     m_develop->setEnabled(enabled);
     m_curvePanel->setEnabled(enabled);
+    m_hslPanel->setEnabled(enabled);
 }
 
 void MainWindow::applyWhiteBalance(const std::optional<iris::WhiteBalance>& wb)

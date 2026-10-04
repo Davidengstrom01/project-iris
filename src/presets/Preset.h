@@ -25,6 +25,7 @@ struct Preset {
     std::optional<float> temperatureShift;
     std::optional<float> tintShift;
     std::optional<ToneCurve> toneCurve;
+    std::optional<HslAdjustments> hsl; // all eight colour ranges when present
 
     bool operator==(const Preset&) const = default;
 };
@@ -32,11 +33,12 @@ struct Preset {
 // Applies a preset as a new edit state (the caller records it for undo).
 EditState applyPreset(const EditState& state, const Preset& preset);
 
-// Key that selects the tone curve in presetFromEdits().
+// Keys that select the tone curve and the HSL adjustments in presetFromEdits().
 inline constexpr const char* kToneCurveKey = "toneCurve";
+inline constexpr const char* kHslKey = "hsl";
 
 // Builds a preset from the current edits, keeping only the given keys (adjustment keys
-// such as "exposure", or kToneCurveKey).
+// such as "exposure", kToneCurveKey or kHslKey).
 Preset presetFromEdits(const std::string& name, const EditState& edits, const std::vector<std::string>& keys);
 
 QJsonObject presetToJson(const Preset& preset);

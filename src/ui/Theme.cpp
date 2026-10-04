@@ -78,6 +78,15 @@ void applyDarkTheme(QApplication& app)
         QPushButton#smallButton:checked { background: #34528a; border-color: #4c8df6; color: white; }
         QPushButton#smallButton:disabled { color: #5c5f65; }
 
+        QTabBar#hslTabs::tab {
+            background: #2a2b2f; color: #9ea1a7; border: 1px solid #383a3f; padding: 3px 6px;
+            font-size: 11px;
+        }
+        QTabBar#hslTabs::tab:first { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+        QTabBar#hslTabs::tab:last { border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+        QTabBar#hslTabs::tab:selected { background: #34528a; color: white; border-color: #4c8df6; }
+        QTabBar#hslTabs::tab:disabled { color: #5c5f65; }
+
         QSlider::groove:horizontal { height: 3px; background: #3a3c41; border-radius: 1px; }
         QSlider::handle:horizontal {
             background: #c9cbd0; width: 11px; height: 11px; margin: -4px 0; border-radius: 5px;

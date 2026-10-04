@@ -17,6 +17,7 @@
 #include "ui/PresetPanel.h"
 #include "ui/Theme.h"
 #include "ui/HistogramWidget.h"
+#include "ui/HslPanel.h"
 #include "ui/ToneCurvePanel.h"
 
 #include <QApplication>
@@ -286,6 +287,43 @@ private slots:
         Window again;
         QVERIFY(again.open(m_photoB));
         QCOMPARE(again.document->edits().toneCurve.rgb, sCurve());
+    }
+
+    void hslColor()
+    {
+        Window w;
+        QVERIFY(QTest::qWaitForWindowActive(&w.window));
+        QVERIFY(w.open(m_photoB));
+        auto* hslPanel = w.window.findChild<ui::HslPanel*>();
+        QVERIFY(hslPanel && hslPanel->isEnabled());
+
+        // Darken and deepen the sky: one undo step per slider drag.
+        QSignalSpy previews(w.session, &ui::PhotoSession::previewReady);
+        HslAdjustments hsl = w.document->edits().hsl;
+        for (float v : {-30.0f, -60.0f, -80.0f}) {
+            hsl[HslColor::Blue].luminance = v;
+            hslPanel->setHsl(hsl);
+            emit hslPanel->hslEdited(hsl, "Blue Luminance");
+        }
+        hsl[HslColor::Blue].saturation = 40;
+        hslPanel->setHsl(hsl);
+        emit hslPanel->hslEdited(hsl, "Blue Saturation");
+        QVERIFY(previews.wait(5000));
+        QCOMPARE(w.document->undoLabel(), QString("Blue Saturation"));
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(w.document->edits().hsl[HslColor::Blue].saturation, 0.0f);
+        QCOMPARE(w.document->edits().hsl[HslColor::Blue].luminance, -80.0f);
+        QCOMPARE(hslPanel->hsl()[HslColor::Blue].saturation, 0.0f); // panel follows undo
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::qWait(700);
+        saveScreenshot(w.window, "08-hsl.png");
+        saveScreenshot(*hslPanel, "09-hsl-panel.png");
+
+        // Saved and restored with the photo.
+        QTest::keyClick(&w.window, Qt::Key_S, Qt::ControlModifier);
+        Window again;
+        QVERIFY(again.open(m_photoB));
+        QCOMPARE(again.document->edits().hsl, hsl);
     }
 
     void beforeAfter()
