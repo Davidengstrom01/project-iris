@@ -1,0 +1,20 @@
+[package]
+name = "iris-cli"
+description = "Headless RAW rendering with the Project Iris engine"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "iris-cli"
+path = "src/main.rs"
+
+[dependencies]
+iris-core.workspace = true
+iris-raw.workspace = true
+iris-persist.workspace = true
+iris-export.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+iris-render.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }

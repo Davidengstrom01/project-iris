@@ -5,3 +5,10 @@ compile_commands.json
 
 # Local planning notes
 /PLAN.md
+
+# Rust
+/target/
+
+# Golden reference renders of a private photo (see tests/golden/README.md)
+/tests/golden/*.png
+/tests/golden/*.tif

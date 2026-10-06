@@ -1,0 +1,7 @@
+[package]
+name = "iris-core"
+description = "Edit state, masks, crop and colour science for Project Iris (no I/O)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

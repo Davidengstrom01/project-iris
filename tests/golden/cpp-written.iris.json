@@ -1,0 +1,117 @@
+{
+    "adjustments": {
+        "blacks": 0,
+        "contrast": 10,
+        "exposure": 0.5,
+        "highlights": -20,
+        "saturation": 0,
+        "shadows": 0,
+        "temperature": 5600,
+        "tint": 4,
+        "vibrance": 0,
+        "whites": 0
+    },
+    "hsl": {
+        "blue": {
+            "hue": -10,
+            "luminance": -40,
+            "saturation": -25
+        },
+        "orange": {
+            "hue": 0,
+            "luminance": 0,
+            "saturation": 15
+        }
+    },
+    "masks": [
+        {
+            "adjustments": {
+                "exposure": -0.5,
+                "temperature": 20
+            },
+            "invert": true,
+            "name": "Radial 1",
+            "radial": {
+                "feather": 0.75,
+                "height": 0.125,
+                "rotation": 30,
+                "width": 0.5,
+                "x": 0.25,
+                "y": 0.75
+            },
+            "strokes": [
+            ],
+            "type": "radial"
+        },
+        {
+            "adjustments": {
+                "contrast": 30
+            },
+            "invert": false,
+            "linear": {
+                "angle": -25,
+                "feather": 0.2,
+                "x": 0.3,
+                "y": 0.6
+            },
+            "name": "Linear 1",
+            "strokes": [
+            ],
+            "type": "linear"
+        },
+        {
+            "adjustments": {
+                "shadows": 40
+            },
+            "invert": false,
+            "name": "Brush 1",
+            "strokes": [
+                {
+                    "feather": 0.5,
+                    "mode": "subtract",
+                    "opacity": 0.7,
+                    "points": [
+                        [
+                            0.125,
+                            0.25
+                        ],
+                        [
+                            0.5,
+                            0.375
+                        ]
+                    ],
+                    "radius": 0.0625
+                }
+            ],
+            "type": "brush"
+        }
+    ],
+    "originalFilename": "photo.ARW",
+    "preset": "Warm Film",
+    "software": "Project Iris",
+    "toneCurve": {
+        "points": [
+            [
+                0,
+                0
+            ],
+            [
+                0.25,
+                0.20000000298023224
+            ],
+            [
+                0.5,
+                0.5199999809265137
+            ],
+            [
+                0.75,
+                0.8199999928474426
+            ],
+            [
+                1,
+                1
+            ]
+        ]
+    },
+    "version": 1
+}

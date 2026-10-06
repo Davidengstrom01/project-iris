@@ -1,0 +1,11 @@
+[package]
+name = "iris-raw"
+description = "Safe RAW decoding for Project Iris (LibRaw)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iris-core.workspace = true
+libraw-sys.workspace = true
+rayon.workspace = true
+thiserror.workspace = true

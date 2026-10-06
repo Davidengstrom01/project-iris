@@ -1,0 +1,9 @@
+Camera:      Sony ILCE-6000
+Lens:        TTARTISAN 27mm F2.8
+ISO:         800
+Shutter:     0.00625 s
+Aperture:    f/2.8
+Focal:       27 mm
+Orientation: 1
+Size:        6024 x 4024
+As shot WB:  5540 K, tint +45

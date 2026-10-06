@@ -1,0 +1,4 @@
+{"version": 1, "adjustments": {"exposure": 0.2},
+ "toneCurve": {"points": [[0, 0.03], [0.25, 0.2], [0.5, 0.5], [0.75, 0.8], [1, 0.97]]},
+ "hsl": {"blue": {"hue": -20, "saturation": 30, "luminance": -40}, "green": {"hue": 25, "saturation": -50, "luminance": 10},
+         "orange": {"hue": 5, "saturation": 15, "luminance": 20}}}

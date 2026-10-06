@@ -1,0 +1,15 @@
+[package]
+name = "iris-persist"
+description = "Project Iris .iris.json sidecars and preset files"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iris-core.workspace = true
+serde_json.workspace = true
+serde = "1"
+thiserror.workspace = true
+tempfile.workspace = true
+include_dir = "0.7"
+
+[dev-dependencies]

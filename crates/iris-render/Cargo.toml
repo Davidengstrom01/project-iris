@@ -1,0 +1,10 @@
+[package]
+name = "iris-render"
+description = "The Project Iris rendering pipeline, shared by preview and export"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iris-core.workspace = true
+rayon.workspace = true
+lcms2 = "6"

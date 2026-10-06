@@ -1,0 +1,16 @@
+[package]
+name = "iris-export"
+description = "JPEG / PNG / TIFF export for Project Iris"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iris-core.workspace = true
+iris-render.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+tiff = "0.10"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
