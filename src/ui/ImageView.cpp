@@ -35,13 +35,14 @@ void ImageView::beginLoading()
     m_message.clear();
     m_beforePreview = QImage();
     m_beforeFull = QImage();
+    m_maskOverlay = QImage();
     update();
 }
 
 void ImageView::setCompareMode(CompareMode mode)
 {
     m_compare = mode;
-    setMouseTracking(mode == CompareMode::Split); // to show the divider's resize cursor
+    updateMouseTracking();
     updateCursor();
     update();
 }
@@ -110,6 +111,51 @@ void ImageView::setPickMode(bool enabled)
 {
     m_pickMode = enabled;
     updateCursor();
+}
+
+void ImageView::setMask(const std::optional<iris::Mask>& mask)
+{
+    const bool wasEditing = m_maskEditor.isActive();
+    m_maskEditor.setMask(mask);
+    if (!mask) {
+        m_maskOverlay = QImage();
+        if (wasEditing && m_panning)
+            m_panning = false;
+    }
+    updateMouseTracking();
+    updateCursor();
+    update();
+}
+
+void ImageView::setMaskTool(MaskEditor::Tool tool)
+{
+    m_maskEditor.setTool(tool);
+    updateCursor();
+    update();
+}
+
+void ImageView::setBrush(const MaskEditor::Brush& brush)
+{
+    m_maskEditor.setBrush(brush);
+    update();
+}
+
+void ImageView::setMaskOverlay(const QImage& overlay)
+{
+    m_maskOverlay = overlay;
+    update();
+}
+
+void ImageView::updateMouseTracking()
+{
+    // Tracking shows the split divider's cursor and the brush outline.
+    setMouseTracking(m_compare == CompareMode::Split || m_maskEditor.isActive());
+}
+
+MaskEditor::Mapping ImageView::maskMapping() const
+{
+    const double s = logicalScale();
+    return {viewCenter() - m_center * s, s, m_imageSize};
 }
 
 double ImageView::fitZoom() const
@@ -210,6 +256,9 @@ void ImageView::updateCursor()
         setCursor(Qt::CrossCursor);
     else if (m_panning)
         setCursor(Qt::ClosedHandCursor);
+    else if (m_maskEditor.isActive() && !m_imageSize.isEmpty() && !m_spaceHeld)
+        setCursor(m_cursorPos && m_maskEditor.isOverHandle(*m_cursorPos, maskMapping()) ? Qt::SizeAllCursor
+                                                                                         : Qt::CrossCursor);
     else if (!m_imageSize.isEmpty() && !m_fit)
         setCursor(Qt::OpenHandCursor);
     else
@@ -275,6 +324,8 @@ void ImageView::paintEvent(QPaintEvent*)
         switch (m_compare) {
         case CompareMode::Off:
             drawPhoto(p, m_preview, m_full, rect());
+            if (m_maskEditor.isActive() && !m_maskOverlay.isNull())
+                drawPhoto(p, m_maskOverlay, QImage(), rect());
             break;
         case CompareMode::Before:
             drawPhoto(p, beforePreview, beforeFull, rect());
@@ -291,6 +342,8 @@ void ImageView::paintEvent(QPaintEvent*)
             break;
         }
         }
+        const bool brushOutside = m_maskEditor.tool() == MaskEditor::Tool::Brush && m_spaceHeld;
+        m_maskEditor.paint(p, maskMapping(), brushOutside ? std::nullopt : m_cursorPos);
     } else if (!m_message.isEmpty() && !m_loading) {
         p.setPen(QColor(0x7d, 0x80, 0x86));
         p.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap, m_message);
@@ -344,7 +397,19 @@ void ImageView::mousePressEvent(QMouseEvent* event)
         m_draggingSplit = true;
         return;
     }
-    if (event->button() == Qt::LeftButton && !m_fit && !m_imageSize.isEmpty()) {
+    // Middle button, or Space + drag, pans; while editing a mask a plain drag edits it.
+    const bool panGesture = event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && m_spaceHeld);
+    if (!panGesture && m_maskEditor.isActive()) {
+        if (event->button() == Qt::LeftButton &&
+            m_maskEditor.press(event->position(), maskMapping(), event->modifiers() & Qt::AltModifier)) {
+            emit maskGestureStarted();
+            if (m_maskEditor.tool() == MaskEditor::Tool::Brush) // a click paints a dab
+                emit maskEdited(*m_maskEditor.mask(), m_maskEditor.gestureLabel());
+            update();
+        }
+        return;
+    }
+    if ((event->button() == Qt::LeftButton || panGesture) && !m_fit && !m_imageSize.isEmpty()) {
         m_panning = true;
         m_lastPanPos = event->position();
         updateCursor();
@@ -353,12 +418,24 @@ void ImageView::mousePressEvent(QMouseEvent* event)
 
 void ImageView::mouseMoveEvent(QMouseEvent* event)
 {
+    if (m_maskEditor.isActive()) {
+        m_cursorPos = event->position();
+        if (m_maskEditor.isDragging()) {
+            if (m_maskEditor.move(event->position(), maskMapping()))
+                emit maskEdited(*m_maskEditor.mask(), m_maskEditor.gestureLabel());
+            update();
+            return;
+        }
+        if (!m_panning)
+            updateCursor();
+        update(); // brush outline follows the cursor
+    }
     if (m_draggingSplit) {
         m_split = std::clamp(event->position().x() / std::max(1, width()), 0.02, 0.98);
         update();
         return;
     }
-    if (m_compare == CompareMode::Split && !m_panning && !m_pickMode) {
+    if (m_compare == CompareMode::Split && !m_panning && !m_pickMode && !m_maskEditor.isActive()) {
         if (std::abs(event->position().x() - splitX()) <= 8)
             setCursor(Qt::SplitHCursor);
         else
@@ -379,7 +456,13 @@ void ImageView::mouseReleaseEvent(QMouseEvent* event)
         m_draggingSplit = false;
         return;
     }
-    if (event->button() == Qt::LeftButton && m_panning) {
+    if (m_maskEditor.isDragging() && event->button() == Qt::LeftButton) {
+        m_maskEditor.release();
+        emit maskGestureFinished();
+        update();
+        return;
+    }
+    if ((event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) && m_panning) {
         m_panning = false;
         updateCursor();
     }
@@ -391,12 +474,36 @@ void ImageView::keyPressEvent(QKeyEvent* event)
         emit pickCancelled();
         return;
     }
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        m_spaceHeld = true;
+        updateCursor();
+        update();
+        return;
+    }
     QWidget::keyPressEvent(event);
+}
+
+void ImageView::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        m_spaceHeld = false;
+        updateCursor();
+        update();
+        return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
+void ImageView::leaveEvent(QEvent* event)
+{
+    m_cursorPos.reset();
+    update();
+    QWidget::leaveEvent(event);
 }
 
 void ImageView::mouseDoubleClickEvent(QMouseEvent* event)
 {
-    if (m_pickMode || event->button() != Qt::LeftButton || m_imageSize.isEmpty())
+    if (m_pickMode || m_maskEditor.isActive() || event->button() != Qt::LeftButton || m_imageSize.isEmpty())
         return;
     if (m_fit)
         setZoom(1.0, event->position());

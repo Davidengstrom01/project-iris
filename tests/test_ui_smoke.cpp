@@ -1,5 +1,5 @@
 // End-to-end test of the desktop UI on a real RAW file, following the MVP workflow:
-// open, zoom, edit, save, reopen, presets, undo, before/after, export.
+// open, zoom, edit, save, reopen, presets, undo, masks, before/after, export.
 //
 //   IRIS_TEST_RAW=/path/to/photo.ARW [IRIS_TEST_SCREENSHOTS=/some/dir] test_ui_smoke
 //
@@ -18,6 +18,7 @@
 #include "ui/Theme.h"
 #include "ui/HistogramWidget.h"
 #include "ui/HslPanel.h"
+#include "ui/MaskPanel.h"
 #include "ui/ToneCurvePanel.h"
 
 #include <QApplication>
@@ -324,6 +325,143 @@ private slots:
         Window again;
         QVERIFY(again.open(m_photoB));
         QCOMPARE(again.document->edits().hsl, hsl);
+    }
+
+    void masks()
+    {
+        Window w;
+        QVERIFY(QTest::qWaitForWindowActive(&w.window));
+        QVERIFY(w.open(m_photoB));
+        auto* maskPanel = w.window.findChild<ui::MaskPanel*>();
+        QVERIFY(maskPanel && maskPanel->isEnabled());
+        QVERIFY(w.document->edits().masks.empty());
+        const QImage plain = w.view->grab().toImage();
+
+        // M creates a brush mask and starts editing it.
+        QTest::keyClick(&w.window, Qt::Key_M);
+        QCOMPARE(w.document->edits().masks.size(), std::size_t(1));
+        QCOMPARE(w.document->edits().masks[0].type, MaskType::Brush);
+        QVERIFY(w.view->isEditingMask());
+        QCOMPARE(maskPanel->selected(), 0);
+
+        // One brush stroke across the upper left of the photo is one undo step.
+        QSignalSpy overlays(w.session, &ui::PhotoSession::maskOverlayReady);
+        const QRect r = w.view->rect();
+        const QPoint from(r.width() * 0.2, r.height() * 0.3), to(r.width() * 0.45, r.height() * 0.3);
+        QTest::mousePress(w.view, Qt::LeftButton, {}, from);
+        for (int i = 1; i <= 10; ++i)
+            QTest::mouseMove(w.view, from + (to - from) * i / 10);
+        QTest::mouseRelease(w.view, Qt::LeftButton, {}, to);
+        QCOMPARE(w.document->undoLabel(), QString("Brush Stroke"));
+        QCOMPARE(w.document->edits().masks[0].strokes.size(), std::size_t(1));
+        QVERIFY(w.document->edits().masks[0].strokes[0].points.size() > 3);
+        QTRY_VERIFY(!overlays.isEmpty() && !overlays.last().at(0).value<QImage>().isNull());
+        QTest::qWait(300);
+        saveScreenshot(w.window, "10-brush-overlay.png");
+
+        // Exposure inside the mask: brighter where painted, unchanged elsewhere.
+        Mask mask = w.document->edits().masks[0];
+        for (float ev : {0.5f, 1.0f, 1.5f}) {
+            mask.adjustments.exposure = ev;
+            emit maskPanel->maskEdited(mask, "Brush 1 Exposure");
+        }
+        QCOMPARE(w.document->undoLabel(), QString("Brush 1 Exposure"));
+        QTest::keyClick(&w.window, Qt::Key_O); // hide the overlay to see the photo
+        QVERIFY(!maskPanel->overlayVisible());
+        QTest::qWait(900);
+        const QImage edited = w.view->grab().toImage();
+        auto regionLuma = [](const QImage& image, const QPoint& centre) {
+            return meanLuma(image.copy(QRect(centre - QPoint(15, 4), QSize(30, 8))));
+        };
+        const QPoint painted = (from + to) / 2, untouched(r.width() * 0.7, r.height() * 0.75);
+        QVERIFY(regionLuma(edited, painted) > regionLuma(plain, painted) + 20);
+        QVERIFY(std::abs(regionLuma(edited, untouched) - regionLuma(plain, untouched)) < 3);
+        saveScreenshot(w.window, "11-brush-exposure.png");
+
+        // Undo the exposure and the stroke; redo both.
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(w.document->edits().masks[0].adjustments.exposure, 0.0f);
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
+        QVERIFY(w.document->edits().masks[0].strokes.empty());
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(w.document->edits().masks[0].adjustments.exposure, 1.5f);
+
+        // A radial gradient, dragged out from its centre, then moved by its centre handle.
+        emit maskPanel->addRequested(MaskType::Radial);
+        QCOMPARE(maskPanel->selected(), 1);
+        QCOMPARE(maskPanel->tool(), ui::MaskEditor::Tool::Shape);
+        const QPoint centre(r.width() * 0.6, r.height() * 0.5);
+        QTest::mousePress(w.view, Qt::LeftButton, {}, centre);
+        QTest::mouseMove(w.view, centre + QPoint(40, 20));
+        QTest::mouseMove(w.view, centre + QPoint(80, 50));
+        QTest::mouseRelease(w.view, Qt::LeftButton, {}, centre + QPoint(80, 50));
+        const RadialGradient drawn = w.document->edits().masks[1].radial;
+        QVERIFY(drawn.width > drawn.height);
+        QCOMPARE(w.document->undoLabel(), QString("Draw Gradient"));
+        QTest::mousePress(w.view, Qt::LeftButton, {}, centre);
+        QTest::mouseMove(w.view, centre + QPoint(-30, 0));
+        QTest::mouseRelease(w.view, Qt::LeftButton, {}, centre + QPoint(-30, 0));
+        QVERIFY(w.document->edits().masks[1].radial.x < drawn.x);
+        QCOMPARE(w.document->edits().masks[1].radial.width, drawn.width);
+        mask = w.document->edits().masks[1];
+        mask.invert = true;
+        mask.adjustments.exposure = -0.7f;
+        emit maskPanel->maskEdited(mask, "Radial 1 Exposure");
+        QTest::keyClick(&w.window, Qt::Key_O);
+
+        // A linear gradient (sky): drag from the top down to the middle.
+        emit maskPanel->addRequested(MaskType::Linear);
+        QTest::mousePress(w.view, Qt::LeftButton, {}, QPoint(r.width() / 2, r.height() / 5));
+        QTest::mouseMove(w.view, QPoint(r.width() / 2, r.height() / 3));
+        QTest::mouseMove(w.view, QPoint(r.width() / 2, r.height() / 2));
+        QTest::mouseRelease(w.view, Qt::LeftButton, {}, QPoint(r.width() / 2, r.height() / 2));
+        const LinearGradient sky = w.document->edits().masks[2].linear;
+        QVERIFY(std::abs(sky.angle) < 1); // effect above
+        QVERIFY(sky.y > 0.2f && sky.y < 0.5f);
+        mask = w.document->edits().masks[2];
+        mask.adjustments.temperature = -40;
+        emit maskPanel->maskEdited(mask, "Linear 1 Temperature");
+        QTest::qWait(900);
+        saveScreenshot(w.window, "12-masks.png");
+        saveScreenshot(*maskPanel, "13-mask-panel.png");
+
+        // Esc stops editing; M resumes with the last mask.
+        QTest::keyClick(&w.window, Qt::Key_Escape);
+        QVERIFY(!w.view->isEditingMask());
+        QTest::keyClick(&w.window, Qt::Key_M);
+        QCOMPARE(maskPanel->selected(), 2);
+
+        // Presets leave masks alone.
+        const std::vector<Mask> masks = w.document->edits().masks;
+        Preset preset;
+        preset.name = "Contrast";
+        preset.values["contrast"] = 20;
+        emit w.presets->presetActivated(preset);
+        QCOMPARE(w.document->edits().masks, masks);
+        QTest::keyClick(&w.window, Qt::Key_Z, Qt::ControlModifier);
+
+        // Saved with the photo and restored on reopen.
+        QTest::keyClick(&w.window, Qt::Key_S, Qt::ControlModifier);
+        Window again;
+        QVERIFY(again.open(m_photoB));
+        QCOMPARE(again.document->edits().masks.size(), masks.size());
+        for (std::size_t i = 0; i < masks.size(); ++i) {
+            const Mask& a = again.document->edits().masks[i];
+            QCOMPARE(a.name, masks[i].name);
+            QCOMPARE(a.adjustments, masks[i].adjustments);
+            QCOMPARE(a.strokes.size(), masks[i].strokes.size());
+            QVERIFY(std::abs(a.radial.x - masks[i].radial.x) < 1e-4f);
+        }
+        QVERIFY(!again.view->isEditingMask());
+
+        // Deleting is undoable.
+        QTest::keyClick(&again.window, Qt::Key_M);
+        emit again.window.findChild<ui::MaskPanel*>()->deleteRequested(0);
+        QCOMPARE(again.document->edits().masks.size(), masks.size() - 1);
+        QVERIFY(!again.view->isEditingMask());
+        QTest::keyClick(&again.window, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(again.document->edits().masks.size(), masks.size());
     }
 
     void beforeAfter()

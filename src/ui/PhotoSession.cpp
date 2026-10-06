@@ -1,6 +1,7 @@
 #include "ui/PhotoSession.h"
 
 #include "raw/RawDecoder.h"
+#include "rendering/MaskCoverage.h"
 #include "rendering/Pipeline.h"
 #include "rendering/Resample.h"
 #include "rendering/WhiteBalanceTools.h"
@@ -15,6 +16,24 @@ namespace {
 constexpr int kDraftLongEdge = 1280;
 constexpr int kPreviewLongEdge = 3200; // large enough for a 4K window in fit mode
 constexpr int kSettleDelayMs = 200;    // pause after the last edit before rendering the sharp preview
+const QRgb kOverlayColor = qRgb(255, 48, 64);
+constexpr double kOverlayOpacity = 0.5;
+
+// Mask coverage as a translucent tint.
+QImage overlayImage(const std::vector<std::uint8_t>& coverage, int width, int height)
+{
+    QImage image(width, height, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < height; ++y) {
+        QRgb* out = reinterpret_cast<QRgb*>(image.scanLine(y));
+        const std::uint8_t* in = &coverage[std::size_t(y) * width];
+        for (int x = 0; x < width; ++x) {
+            const int a = int(in[x] * kOverlayOpacity + 0.5);
+            out[x] = qRgba(qRed(kOverlayColor) * a / 255, qGreen(kOverlayColor) * a / 255,
+                           qBlue(kOverlayColor) * a / 255, a);
+        }
+    }
+    return image;
+}
 
 } // namespace
 
@@ -61,6 +80,7 @@ void PhotoSession::open(const QString& path)
     m_fullVersion = 0;
     m_settleTimer.stop();
     m_beforeRendered = {};
+    m_overlayMask = -1;
     emit loadingStarted(path);
 
     const std::string file = path.toStdString();
@@ -145,6 +165,7 @@ void PhotoSession::setEdits(const EditState& edits, Update update)
         emit fullImageInvalidated();
     }
     requestRender(Draft);
+    requestOverlay();
     if (update == Update::Interactive) {
         m_settleTimer.start();
     } else {
@@ -170,6 +191,42 @@ void PhotoSession::setBeforeNeeded(bool needed)
         if (m_fullNeeded)
             renderBefore(Full);
     }
+}
+
+void PhotoSession::setMaskOverlay(int index)
+{
+    if (index == m_overlayMask)
+        return;
+    m_overlayMask = index;
+    requestOverlay();
+}
+
+void PhotoSession::requestOverlay()
+{
+    if (m_overlayBusy) {
+        m_overlayPending = true;
+        return;
+    }
+    if (m_overlayMask < 0 || m_overlayMask >= int(m_edits.masks.size()) || !m_draftSource) {
+        emit maskOverlayReady(QImage());
+        return;
+    }
+    m_overlayBusy = true;
+    m_overlayPending = false;
+    const Mask mask = m_edits.masks[m_overlayMask];
+    const int width = m_draftSource->width, height = m_draftSource->height;
+    const quint64 generation = m_generation->load();
+    QtConcurrent::run([mask, width, height] {
+        return overlayImage(renderMaskCoverage(mask, width, height), width, height);
+    }).then(this, [this, generation](const QImage& overlay) {
+        m_overlayBusy = false;
+        // Show it even if the mask changed meanwhile (it is still the newest available),
+        // then catch up.
+        if (isCurrent(generation) && m_overlayMask >= 0)
+            emit maskOverlayReady(overlay);
+        if (m_overlayPending)
+            requestOverlay();
+    });
 }
 
 void PhotoSession::renderBefore(Level level)

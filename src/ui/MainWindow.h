@@ -25,6 +25,7 @@ class HistogramWidget;
 class HslPanel;
 class InfoPanel;
 class LibraryPanel;
+class MaskPanel;
 class PhotoSession;
 class PresetPanel;
 class ToneCurvePanel;
@@ -69,6 +70,15 @@ private:
     void updateEditActions();
     void updateZoomLabel(double zoom, bool fit);
 
+    // Masks: the selected mask is edited on the photo (-1 = none, normal viewing).
+    void selectMask(int index);
+    void updateMaskEditing();
+    void addMask(iris::MaskType type);
+    void deleteMask(int index);
+    void toggleMaskEditing();
+    // Replaces the selected mask (a slider, brush stroke or handle drag).
+    void editSelectedMask(const iris::Mask& mask, const QString& label);
+
     PhotoSession* m_session;
     EditDocument* m_document;
     std::unique_ptr<PresetLibrary> m_presetLibrary;
@@ -79,6 +89,7 @@ private:
     DevelopPanel* m_develop;
     ToneCurvePanel* m_curvePanel;
     HslPanel* m_hslPanel;
+    MaskPanel* m_maskPanel;
     HistogramWidget* m_histogram;
     InfoPanel* m_info;
     QLabel* m_zoomLabel;
@@ -97,6 +108,14 @@ private:
     QAction* m_actualSizeAction;
     QAction* m_zoomInAction;
     QAction* m_zoomOutAction;
+    QAction* m_maskAction;
+    QAction* m_overlayAction;
+    QAction* m_exitMaskAction;
+    QAction* m_brushSmallerAction;
+    QAction* m_brushLargerAction;
+
+    int m_selectedMask = -1;
+    int m_lastSelectedMask = 0;
 
     int m_exportsRunning = 0;
     // "\" toggles before/after on a tap and shows "before" only while held on a long press.

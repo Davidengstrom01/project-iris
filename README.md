@@ -15,8 +15,8 @@ Original RAW files are only ever opened read-only.
 | 3 — Editing state + presets | Sidecars, undo/redo, before/after, presets | ✅ done |
 | 4 — Tone curve | Histogram, RGB point curve, S / inverse-S presets | ✅ done |
 | 5 — HSL | Hue / saturation / luminance for eight colour ranges | ✅ done |
-| 6 — Masking | | next |
-| 7 — Crop & polish | | |
+| 6 — Masking | Brush, linear and radial masks; overlay; per-mask adjustments; invert; add/subtract/erase | ✅ done |
+| 7 — Crop & polish | | next |
 | 8 — Packaging | AppImage, `.deb` | |
 
 ## Building
@@ -70,15 +70,20 @@ IRIS_TEST_RAW=/path/to/photo.ARW ctest --test-dir build --output-on-failure
 | Drag | Pan |
 | Double-click | Toggle fit / 100% at the cursor |
 | Double-click a slider name | Reset that slider |
-| Esc | Cancel the white-balance eyedropper |
+| M | Edit masks (creates a brush mask if there are none) |
+| Esc | Stop editing masks / cancel the white-balance eyedropper |
+| O | Show/hide the mask overlay |
+| [ / ] | Smaller / larger brush |
+| Alt+drag | Erase while painting a mask |
+| Middle-drag or Space+drag | Pan while editing a mask |
 | Tone curve: click / drag / double-click | Add / move / remove a point (also right-click or Delete) |
 
 ## Architecture
 
 ```
-src/core        Image buffers and metadata types (header-only, no dependencies)
+src/core        Edit state, masks, image buffers and metadata (no dependencies)
 src/raw         LibRaw decoding → linear Rec.2020 float working image
-src/rendering   The rendering pipeline: resample + LittleCMS output transform (OpenMP)
+src/rendering   The rendering pipeline: resample, tone, HSL, mask coverage, LittleCMS output (OpenMP)
 src/export      JPEG/PNG/TIFF writing (QtGui image writers, embedded sRGB ICC profile)
 src/persistence .iris.json sidecars (QtCore JSON)
 src/presets     Preset format and library (QtCore JSON)
@@ -103,6 +108,7 @@ source (linear Rec.2020, as-shot WB)
   -> resize
   -> white balance + exposure        one 3x3 matrix (Bradford adaptation), scene-linear
   -> highlights / shadows            edge-aware local gain (guided-filter base layer)
+  -> masks                           local WB, exposure, highlights/shadows, contrast, saturation
   -> contrast / whites / blacks      hue-preserving tone mapping -> display-linear
   -> RGB tone curve                  monotone spline, hue-preserving (same lookup table)
   -> HSL                             per colour range, in Oklab
@@ -124,6 +130,9 @@ source (linear Rec.2020, as-shot WB)
   and lightness is separate from chroma. The eight ranges (red, orange, yellow, green,
   aqua, blue, purple, magenta) are centred on reference sRGB colours; each pixel blends
   smoothly between its two nearest ranges, and near-neutral pixels are left alone.
+- **Masks** apply their local adjustments in scene-linear light, right after the global
+  exposure, so they behave like the global sliders (a darker sky keeps its highlight detail
+  instead of turning grey). See [Masks](#masks).
 - With every slider at zero the render is neutral (no hidden "look" curve).
 
 ### Editing state, undo and sidecars
@@ -136,12 +145,40 @@ file. **Ctrl+S** saves the edits next to it:
 photo.ARW
 photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
                      "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]},
-                     "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}}}
+                     "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}},
+                     "masks": [...]}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name
 (`photo.ARW`, `photo.CR2`), the second one uses `photo.CR2.iris.json`. Leaving a photo or
 quitting with unsaved edits asks whether to save them.
+
+### Masks
+
+A mask selects part of the photo and applies Exposure, Contrast, Highlights, Shadows,
+Saturation and Temperature there, on top of the global settings. Press **M** (or use
+*+ Brush / + Linear / + Radial* in the Masks panel) and edit on the photo:
+
+- **Brush**: paint with *Add*; *Subtract* removes the effect where painted (gradient
+  included); *Erase* (or Alt+drag) removes earlier strokes. Size, feather and opacity are
+  per stroke; a stroke does not build up where it crosses itself.
+- **Linear gradient**: drag from where the effect is full to where it ends; drag the centre
+  handle to move it or an outer handle to change its angle and width.
+- **Radial gradient**: drag out from the centre; the handles change width, height and
+  rotation. Feather softens the edge.
+- Gradients can be refined with brush strokes too. *Invert* flips the mask (Subtract strokes
+  still remove the effect). The red overlay (**O**) shows the selected mask's area.
+
+Each brush stroke and each handle drag is one undo step. Mask geometry is stored relative
+to the photo (positions as fractions of width/height, sizes as fractions of the long edge),
+so the preview and the full-resolution export match. Masks are saved in the sidecar and
+are never part of presets.
+
+```json
+"masks": [{"type": "radial", "name": "Radial 1", "invert": true,
+           "radial": {"x": 0.5, "y": 0.45, "width": 0.6, "height": 0.4, "rotation": 0, "feather": 0.5},
+           "strokes": [], "adjustments": {"exposure": -0.6}}]
+```
 
 ### Presets
 
@@ -169,7 +206,7 @@ most one render in flight per level (newer edits replace queued ones):
 
 | Level | Size | When |
 |---|---|---|
-| Draft | 1280 px | immediately on every slider change (~50 ms) |
+| Draft | 1280 px | immediately on every slider change or brush movement (~50 ms) |
 | Preview | 3200 px | 200 ms after the last change |
 | Full | original | only when zoomed in beyond the preview |
 

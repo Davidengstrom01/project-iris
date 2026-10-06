@@ -4,6 +4,7 @@
 #include "export/Exporter.h"
 #include "rendering/Histogram.h"
 #include "rendering/HslMixer.h"
+#include "rendering/MaskCoverage.h"
 #include "rendering/Pipeline.h"
 #include "rendering/Resample.h"
 #include "rendering/Tone.h"
@@ -391,6 +392,176 @@ private slots:
                                  saturationOf(renderPixel(0.02f, 0.2f, 0.3f));
         QVERIFY(mutedGain > 0.05);
         QVERIFY(mutedGain > vividGain);
+    }
+
+    // --- Masks ------------------------------------------------------------------
+
+    void linearGradientCoverage()
+    {
+        Mask mask = newMask(MaskType::Linear, {});
+        mask.linear = {0.5f, 0.5f, 0, 0.2f}; // horizontal, effect above, 20% transition
+        const MaskCoverage coverage(mask, 100, 100);
+        std::vector<float> row(100);
+        auto at = [&](int y) { coverage.row(y, row.data()); return row[50]; };
+        QCOMPARE(at(0), 1.0f);
+        QVERIFY(std::abs(at(50) - 0.5f) < 0.05f);
+        QCOMPARE(at(99), 0.0f);
+        QVERIFY(at(42) > at(45) && at(45) > at(55)); // smooth transition
+
+        mask.linear.angle = 90; // rotated counter-clockwise: effect on the left
+        const MaskCoverage left(mask, 100, 100);
+        left.row(50, row.data());
+        QCOMPARE(row[0], 1.0f);
+        QCOMPARE(row[99], 0.0f);
+
+        mask.invert = true;
+        const MaskCoverage inverted(mask, 100, 100);
+        inverted.row(50, row.data());
+        QCOMPARE(row[0], 0.0f);
+        QCOMPARE(row[99], 1.0f);
+    }
+
+    void radialGradientCoverage()
+    {
+        Mask mask = newMask(MaskType::Radial, {});
+        mask.radial = {0.5f, 0.5f, 0.6f, 0.2f, 0, 0.3f}; // wide, flat ellipse
+        std::vector<float> row(200);
+        const MaskCoverage flat(mask, 200, 200);
+        flat.row(100, row.data());
+        QCOMPARE(row[100], 1.0f); // centre
+        QCOMPARE(row[65], 1.0f);  // inside along the long axis (60 px radius)
+        QVERIFY(row[42] > 0 && row[42] < 1); // in the feathered edge
+        QCOMPARE(row[5], 0.0f);   // outside
+        flat.row(70, row.data()); // 30 px above the centre: beyond the 20 px half-height
+        QCOMPARE(row[100], 0.0f);
+
+        mask.radial.rotation = 90; // now tall
+        const MaskCoverage tall(mask, 200, 200);
+        tall.row(70, row.data());
+        QCOMPARE(row[100], 1.0f);
+        tall.row(100, row.data());
+        QCOMPARE(row[40], 0.0f);
+    }
+
+    void brushStrokesAddSubtractAndErase()
+    {
+        auto stroke = [](BrushMode mode, float y, float opacity = 1) {
+            BrushStroke s;
+            s.mode = mode;
+            s.radius = 0.05f;
+            s.feather = 0;
+            s.opacity = opacity;
+            s.points = {{0.2f, y}, {0.8f, y}};
+            return s;
+        };
+        std::vector<float> row(100);
+        auto at = [&](const Mask& m, int x, int y) {
+            MaskCoverage(m, 100, 100).row(y, row.data());
+            return row[x];
+        };
+
+        Mask brush = newMask(MaskType::Brush, {});
+        QCOMPARE(at(brush, 50, 50), 0.0f); // nothing painted
+        brush.strokes = {stroke(BrushMode::Add, 0.5f)};
+        QCOMPARE(at(brush, 50, 50), 1.0f);
+        QCOMPARE(at(brush, 50, 60), 0.0f);
+        QCOMPARE(at(brush, 10, 50), 0.0f);
+
+        // Opacity, and a stroke does not build up where it overlaps itself.
+        brush.strokes = {stroke(BrushMode::Add, 0.5f, 0.5f)};
+        brush.strokes[0].points.push_back({0.5f, 0.5f});
+        QVERIFY(std::abs(at(brush, 50, 50) - 0.5f) < 0.01f);
+
+        // Erase removes earlier paint.
+        brush.strokes = {stroke(BrushMode::Add, 0.5f), stroke(BrushMode::Erase, 0.5f)};
+        QCOMPARE(at(brush, 50, 50), 0.0f);
+
+        // Subtract removes the gradient underneath; erasing it brings the gradient back.
+        Mask linear = newMask(MaskType::Linear, {});
+        linear.linear = {0.5f, 1.5f, 0, 0.01f}; // effect everywhere
+        QCOMPARE(at(linear, 50, 50), 1.0f);
+        linear.strokes = {stroke(BrushMode::Subtract, 0.5f)};
+        QCOMPARE(at(linear, 50, 50), 0.0f);
+        QCOMPARE(at(linear, 50, 20), 1.0f);
+        linear.strokes.push_back(stroke(BrushMode::Erase, 0.5f));
+        QCOMPARE(at(linear, 50, 50), 1.0f);
+
+        // Invert flips paint, but Subtract always removes.
+        brush.strokes = {stroke(BrushMode::Add, 0.5f), stroke(BrushMode::Subtract, 0.2f)};
+        brush.invert = true;
+        QCOMPARE(at(brush, 50, 50), 0.0f);
+        QCOMPARE(at(brush, 50, 80), 1.0f);
+        QCOMPARE(at(brush, 50, 20), 0.0f);
+    }
+
+    void maskCoverageMatchesAcrossResolutions()
+    {
+        Mask mask = newMask(MaskType::Radial, {});
+        mask.radial = {0.4f, 0.55f, 0.5f, 0.3f, 30, 0.6f};
+        BrushStroke s;
+        s.radius = 0.04f;
+        s.points = {{0.1f, 0.1f}, {0.5f, 0.3f}, {0.9f, 0.2f}};
+        mask.strokes = {s};
+        const std::vector<std::uint8_t> small = renderMaskCoverage(mask, 300, 200);
+        const std::vector<std::uint8_t> large = renderMaskCoverage(mask, 1500, 1000);
+        for (const double fx : {0.1, 0.3, 0.45, 0.6, 0.8})
+            for (const double fy : {0.15, 0.3, 0.55, 0.7}) {
+                const int a = small[int(fy * 200) * 300 + int(fx * 300)];
+                const int b = large[(int(fy * 200) * 5 + 2) * 1500 + int(fx * 300) * 5 + 2];
+                QVERIFY2(std::abs(a - b) <= 8, qPrintable(QString("%1 vs %2 at %3,%4").arg(a).arg(b).arg(fx).arg(fy)));
+            }
+    }
+
+    void localAdjustmentsOnlyInsideTheMask()
+    {
+        // A grey image; a linear mask covering the left half brightens it by 1 EV.
+        EditState edits = neutral();
+        Mask mask = newMask(MaskType::Linear, {});
+        mask.linear = {0.5f, 0.5f, 90, 0.02f};
+        edits.masks = {mask};
+        const ImageF grey = solid(100, 20, 0.1f, 0.1f, 0.1f);
+        const EncodedImage plain = render(grey, kAsShot, neutral(), {});
+        const EncodedImage neutralMask = render(grey, kAsShot, edits, {});
+        QCOMPARE(neutralMask.data8, plain.data8); // a mask with no adjustments changes nothing
+
+        edits.masks[0].adjustments.exposure = 1;
+        const EncodedImage out = render(grey, kAsShot, edits, {});
+        auto px = [&](const EncodedImage& image, int x) { return int(image.data8[(10 * 100 + x) * 3]); };
+        QCOMPARE(px(out, 90), px(plain, 90));
+        QVERIFY(std::abs(px(out, 10) - renderPixel(0.2f, 0.2f, 0.2f)[0]) <= 1); // +1 EV = twice the light
+        QVERIFY(px(out, 48) > px(out, 52));
+    }
+
+    void localAdjustmentsMoveInTheRightDirection()
+    {
+        auto withLocal = [](const char* key, float value) {
+            EditState edits = neutral();
+            Mask mask = newMask(MaskType::Brush, {});
+            mask.invert = true; // everywhere
+            for (const LocalAdjustmentField& field : localAdjustmentFields())
+                if (std::string(field.key) == key)
+                    field.value(mask.adjustments) = value;
+            edits.masks = {mask};
+            return edits;
+        };
+        const std::array<int, 3> grey = renderPixel(0.18f, 0.18f, 0.18f);
+
+        const auto warm = renderPixel(0.18f, 0.18f, 0.18f, withLocal("temperature", 60));
+        QVERIFY(warm[0] > grey[0] + 3 && warm[2] < grey[2] - 3);
+
+        const auto bright = renderPixel(0.6f, 0.6f, 0.6f, withLocal("contrast", 100));
+        const auto dark = renderPixel(0.03f, 0.03f, 0.03f, withLocal("contrast", 100));
+        QVERIFY(bright[0] > renderPixel(0.6f, 0.6f, 0.6f)[0] + 5);
+        QVERIFY(dark[0] < renderPixel(0.03f, 0.03f, 0.03f)[0] - 5);
+        QVERIFY(std::abs(renderPixel(0.18f, 0.18f, 0.18f, withLocal("contrast", 100))[0] - grey[0]) <= 1);
+
+        const auto mono = renderPixel(0.4f, 0.1f, 0.05f, withLocal("saturation", -100));
+        QVERIFY(std::abs(mono[0] - mono[1]) <= 1 && std::abs(mono[1] - mono[2]) <= 1);
+
+        QVERIFY(renderPixel(0.01f, 0.01f, 0.01f, withLocal("shadows", 100))[0] >
+                renderPixel(0.01f, 0.01f, 0.01f)[0] + 15);
+        QVERIFY(renderPixel(0.7f, 0.7f, 0.7f, withLocal("highlights", -100))[0] <
+                renderPixel(0.7f, 0.7f, 0.7f)[0] - 15);
     }
 
     // --- Resampling -------------------------------------------------------------

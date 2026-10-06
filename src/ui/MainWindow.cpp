@@ -10,6 +10,7 @@
 #include "ui/HslPanel.h"
 #include "ui/InfoPanel.h"
 #include "ui/LibraryPanel.h"
+#include "ui/MaskPanel.h"
 #include "ui/PhotoSession.h"
 #include "ui/PresetPanel.h"
 #include "ui/SavePresetDialog.h"
@@ -126,6 +127,12 @@ void MainWindow::createActions()
     m_zoomInAction = action(tr("Zoom In"), QKeySequence::ZoomIn, {});
     m_zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(Qt::CTRL | Qt::Key_Equal)});
     m_zoomOutAction = action(tr("Zoom Out"), QKeySequence::ZoomOut, {});
+    m_maskAction = action(tr("Masks"), QKeySequence(Qt::Key_M), tr("Edit masks (M)"));
+    m_maskAction->setCheckable(true);
+    m_overlayAction = action(tr("Mask Overlay"), QKeySequence(Qt::Key_O), {});
+    m_exitMaskAction = action(tr("Done"), QKeySequence(Qt::Key_Escape), {});
+    m_brushSmallerAction = action(tr("Smaller Brush"), QKeySequence(Qt::Key_BracketLeft), {});
+    m_brushLargerAction = action(tr("Larger Brush"), QKeySequence(Qt::Key_BracketRight), {});
     QAction* quit = action(tr("Quit"), QKeySequence::Quit, {});
 
     connect(m_openAction, &QAction::triggered, this, &MainWindow::showOpenDialog);
@@ -141,6 +148,17 @@ void MainWindow::createActions()
     connect(m_splitAction, &QAction::triggered, this, [this](bool on) {
         setCompareMode(on ? ImageView::CompareMode::Split : ImageView::CompareMode::Off);
     });
+    connect(m_maskAction, &QAction::triggered, this, &MainWindow::toggleMaskEditing);
+    connect(m_overlayAction, &QAction::triggered, this,
+            [this] { m_maskPanel->setOverlayVisible(!m_maskPanel->overlayVisible()); });
+    connect(m_exitMaskAction, &QAction::triggered, this, [this] {
+        if (m_view->isPicking()) // Esc cancels the eyedropper first
+            m_develop->setEyedropperActive(false);
+        else
+            selectMask(-1);
+    });
+    connect(m_brushSmallerAction, &QAction::triggered, this, [this] { m_maskPanel->stepBrushSize(-1); });
+    connect(m_brushLargerAction, &QAction::triggered, this, [this] { m_maskPanel->stepBrushSize(1); });
     connect(quit, &QAction::triggered, this, &QWidget::close);
 }
 
@@ -164,6 +182,8 @@ void MainWindow::createLayout()
     toolbar->addSeparator();
     toolbar->addAction(m_beforeAfterAction);
     toolbar->addAction(m_splitAction);
+    toolbar->addSeparator();
+    toolbar->addAction(m_maskAction);
     auto* spacer = new QWidget(toolbar);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar->addWidget(spacer);
@@ -189,6 +209,8 @@ void MainWindow::createLayout()
     rightLayout->addWidget(m_curvePanel);
     m_hslPanel = new HslPanel(rightContent);
     rightLayout->addWidget(m_hslPanel);
+    m_maskPanel = new MaskPanel(rightContent);
+    rightLayout->addWidget(m_maskPanel);
     setEditingEnabled(false);
     m_info = new InfoPanel(rightContent);
     rightLayout->addWidget(m_info);
@@ -365,6 +387,32 @@ void MainWindow::connectEditing()
         commitEdit(state, tr("Reset Color"));
     });
 
+    // Masks: panel sliders behave like other sliders; a brush stroke or handle drag on the
+    // photo is one undo step.
+    connect(m_maskPanel, &MaskPanel::addRequested, this, &MainWindow::addMask);
+    connect(m_maskPanel, &MaskPanel::deleteRequested, this, &MainWindow::deleteMask);
+    connect(m_maskPanel, &MaskPanel::selectionRequested, this, &MainWindow::selectMask);
+    connect(m_maskPanel, &MaskPanel::maskEdited, this, [this](const iris::Mask& mask, const QString& label) {
+        editSelectedMask(mask, label);
+        m_maskPanel->setMasks(m_document->edits().masks, m_selectedMask);
+        m_view->setMask(mask);
+    });
+    connect(m_maskPanel, &MaskPanel::toolChanged, this, [this](MaskEditor::Tool tool, const MaskEditor::Brush& brush) {
+        m_view->setMaskTool(tool);
+        m_view->setBrush(brush);
+    });
+    connect(m_maskPanel, &MaskPanel::overlayToggled, this, &MainWindow::updateMaskEditing);
+    connect(m_view, &ImageView::maskGestureStarted, m_document, &EditDocument::beginGesture);
+    connect(m_view, &ImageView::maskEdited, this, [this](const iris::Mask& mask, const QString& label) {
+        editSelectedMask(mask, label);
+        m_maskPanel->setMasks(m_document->edits().masks, m_selectedMask);
+    });
+    connect(m_view, &ImageView::maskGestureFinished, m_document, &EditDocument::endGesture);
+    connect(m_session, &PhotoSession::maskOverlayReady, this, [this](const QImage& overlay) {
+        if (m_selectedMask >= 0)
+            m_view->setMaskOverlay(overlay);
+    });
+
     connect(m_presets, &PresetPanel::presetActivated, this, &MainWindow::applyPreset);
     connect(m_presets, &PresetPanel::savePresetRequested, this, &MainWindow::showSavePresetDialog);
 }
@@ -383,6 +431,10 @@ void MainWindow::showEdits(const EditState& edits)
     m_develop->setAdjustments(edits.basic, m_document->defaults().basic.whiteBalance);
     m_curvePanel->setCurve(edits.toneCurve);
     m_hslPanel->setHsl(edits.hsl);
+    if (m_selectedMask >= int(edits.masks.size())) // e.g. undoing "Add Mask"
+        m_selectedMask = -1;
+    m_maskPanel->setMasks(edits.masks, m_selectedMask);
+    updateMaskEditing();
 }
 
 void MainWindow::setEditingEnabled(bool enabled)
@@ -391,6 +443,8 @@ void MainWindow::setEditingEnabled(bool enabled)
     m_develop->setEnabled(enabled);
     m_curvePanel->setEnabled(enabled);
     m_hslPanel->setEnabled(enabled);
+    m_maskPanel->setEnabled(enabled);
+    m_maskAction->setEnabled(enabled);
 }
 
 void MainWindow::applyWhiteBalance(const std::optional<iris::WhiteBalance>& wb)
@@ -407,6 +461,93 @@ void MainWindow::applyPreset(const iris::Preset& preset)
     const QString name = QString::fromStdString(preset.name);
     commitEdit(iris::applyPreset(m_document->edits(), preset), tr("Preset: %1").arg(name));
     statusBar()->showMessage(tr("Applied preset “%1”").arg(name), 4000);
+}
+
+void MainWindow::selectMask(int index)
+{
+    const auto& masks = m_document->edits().masks;
+    m_selectedMask = m_document->isLoaded() && index >= 0 && index < int(masks.size()) ? index : -1;
+    if (m_selectedMask >= 0)
+        m_lastSelectedMask = m_selectedMask;
+    m_maskPanel->setMasks(masks, m_selectedMask);
+    updateMaskEditing();
+    if (m_selectedMask >= 0) {
+        m_view->setFocus(); // for [ ] and Space
+        const bool brush = m_maskPanel->tool() == MaskEditor::Tool::Brush;
+        statusBar()->showMessage(brush ? tr("Paint on the photo. [ ] change the brush size, Space + drag pans, "
+                                            "Esc when done.")
+                                       : tr("Drag the handles, or drag on the photo to draw the gradient again. "
+                                            "Esc when done."));
+    } else {
+        statusBar()->clearMessage();
+    }
+}
+
+void MainWindow::updateMaskEditing()
+{
+    const auto& masks = m_document->edits().masks;
+    const bool editing = m_selectedMask >= 0 && m_selectedMask < int(masks.size());
+    m_view->setMaskTool(m_maskPanel->tool());
+    m_view->setBrush(m_maskPanel->brush());
+    m_view->setMask(editing ? std::optional<Mask>(masks[m_selectedMask]) : std::nullopt);
+    m_session->setMaskOverlay(editing && m_maskPanel->overlayVisible() ? m_selectedMask : -1);
+    m_maskAction->setChecked(editing);
+    m_exitMaskAction->setEnabled(editing);
+    m_brushSmallerAction->setEnabled(editing);
+    m_brushLargerAction->setEnabled(editing);
+    m_overlayAction->setEnabled(editing);
+}
+
+void MainWindow::addMask(iris::MaskType type)
+{
+    if (!m_document->isLoaded())
+        return;
+    EditState state = m_document->edits();
+    if (state.masks.size() >= kMaxMasks) {
+        statusBar()->showMessage(tr("A photo can have at most %1 masks.").arg(kMaxMasks), 4000);
+        return;
+    }
+    state.masks.push_back(newMask(type, state.masks));
+    m_selectedMask = int(state.masks.size()) - 1;
+    commitEdit(state, tr("Add %1 Mask").arg(tr(maskTypeName(type))));
+    selectMask(m_selectedMask);
+}
+
+void MainWindow::deleteMask(int index)
+{
+    EditState state = m_document->edits();
+    if (index < 0 || index >= int(state.masks.size()))
+        return;
+    const QString name = QString::fromStdString(state.masks[index].name);
+    state.masks.erase(state.masks.begin() + index);
+    m_selectedMask = -1;
+    commitEdit(state, tr("Delete %1").arg(name));
+    selectMask(-1);
+}
+
+void MainWindow::toggleMaskEditing()
+{
+    if (!m_document->isLoaded()) {
+        m_maskAction->setChecked(false);
+        return;
+    }
+    const auto& masks = m_document->edits().masks;
+    if (m_selectedMask >= 0)
+        selectMask(-1);
+    else if (masks.empty())
+        addMask(MaskType::Brush);
+    else
+        selectMask(std::min(m_lastSelectedMask, int(masks.size()) - 1));
+}
+
+void MainWindow::editSelectedMask(const iris::Mask& mask, const QString& label)
+{
+    EditState state = m_document->edits();
+    if (m_selectedMask < 0 || m_selectedMask >= int(state.masks.size()))
+        return;
+    state.masks[m_selectedMask] = mask;
+    m_document->edit(state, label, true);
+    m_session->setEdits(m_document->edits(), PhotoSession::Update::Interactive);
 }
 
 void MainWindow::showSavePresetDialog()
@@ -522,6 +663,7 @@ void MainWindow::openPhoto(const QString& path)
         return;
     }
     setCompareMode(ImageView::CompareMode::Off);
+    selectMask(-1);
     m_document->clear();
     m_library->showFolderOf(absolute);
     m_session->open(absolute);

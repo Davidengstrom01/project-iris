@@ -8,7 +8,9 @@ add_library(iris_core STATIC
     core/Image.h core/PhotoMetadata.h
     core/EditState.h core/EditState.cpp
     core/Curve.h core/Curve.cpp
+    core/Crop.h core/Crop.cpp
     core/Hsl.h core/Hsl.cpp
+    core/Mask.h core/Mask.cpp
     core/EditHistory.h core/EditHistory.cpp
     core/ColorScience.h core/ColorScience.cpp)
 target_include_directories(iris_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -23,6 +25,7 @@ add_library(iris_rendering STATIC
     rendering/Tone.h rendering/Tone.cpp
     rendering/Histogram.h rendering/Histogram.cpp
     rendering/HslMixer.h rendering/HslMixer.cpp
+    rendering/MaskCoverage.h rendering/MaskCoverage.cpp
     rendering/WhiteBalanceTools.h rendering/WhiteBalanceTools.cpp
     rendering/Pipeline.h rendering/Pipeline.cpp)
 target_link_libraries(iris_rendering PUBLIC iris_core PRIVATE PkgConfig::LCMS2 OpenMP::OpenMP_CXX)
@@ -65,7 +68,9 @@ qt_add_library(iris_ui STATIC
     ui/HistogramWidget.h ui/HistogramWidget.cpp
     ui/CurveEditor.h ui/CurveEditor.cpp
     ui/ToneCurvePanel.h ui/ToneCurvePanel.cpp
-    ui/HslPanel.h ui/HslPanel.cpp)
+    ui/HslPanel.h ui/HslPanel.cpp
+    ui/MaskEditor.h ui/MaskEditor.cpp
+    ui/MaskPanel.h ui/MaskPanel.cpp)
 target_link_libraries(iris_ui PUBLIC iris_raw iris_export iris_persistence iris_presets Qt6::Widgets Qt6::Concurrent)
 
 qt_add_executable(iris ui/main.cpp)

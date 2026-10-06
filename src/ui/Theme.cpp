@@ -63,6 +63,12 @@ void applyDarkTheme(QApplication& app)
         QListWidget#photoList::item:hover { background: #2c2e32; }
         QListWidget#photoList::item:selected { background: #34528a; color: white; }
 
+        QListWidget#maskList { background: #1b1c1f; border: 1px solid #2f3136; border-radius: 3px; outline: none; }
+        QListWidget#maskList::item { padding: 3px 8px; }
+        QListWidget#maskList::item:hover { background: #2c2e32; }
+        QListWidget#maskList::item:selected { background: #34528a; color: white; }
+        QLabel#hintLabel { color: #7d8086; padding: 0 0 4px 0; }
+
         QSplitter::handle { background: #111214; }
         QScrollArea { border: none; background: #232428; }
 

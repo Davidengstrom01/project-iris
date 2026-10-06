@@ -114,6 +114,19 @@ private slots:
         edits.toneCurve.rgb = {{0, 0}, {0.25f, 0.20f}, {0.5f, 0.52f}, {0.75f, 0.82f}, {1, 1}};
         edits.hsl[HslColor::Blue] = {-10, -25, -40};
         edits.hsl[HslColor::Orange].saturation = 15;
+        Mask radial = newMask(MaskType::Radial, {});
+        radial.radial = {0.25f, 0.75f, 0.5f, 0.125f, 30, 0.75f};
+        radial.invert = true;
+        radial.adjustments.exposure = -0.5f;
+        radial.adjustments.temperature = 20;
+        Mask brush = newMask(MaskType::Brush, {radial});
+        BrushStroke stroke;
+        stroke.mode = BrushMode::Subtract;
+        stroke.radius = 0.0625f;
+        stroke.points = {{0.125f, 0.25f}, {0.5f, 0.375f}};
+        brush.strokes = {stroke};
+        brush.adjustments.shadows = 40;
+        edits.masks = {radial, brush};
         QCOMPARE(writeSidecar(sidecarPathFor(raw), raw, edits), QString());
 
         const SidecarResult read = readSidecar(raw, defaultEditState(kAsShot));
@@ -135,6 +148,49 @@ private slots:
         const QJsonObject hsl = json.value("hsl").toObject();
         QCOMPARE(hsl.keys(), QStringList({"blue", "orange"})); // neutral ranges are omitted
         QCOMPARE(hsl.value("blue").toObject().value("luminance").toDouble(), -40.0);
+        const QJsonArray masks = json.value("masks").toArray();
+        QCOMPARE(masks.size(), 2);
+        QCOMPARE(masks[0].toObject().value("type").toString(), QString("radial"));
+        QCOMPARE(masks[0].toObject().value("name").toString(), QString("Radial 1"));
+        QVERIFY(!masks[0].toObject().contains("linear")); // only the mask's own shape
+        QCOMPARE(masks[1].toObject().value("strokes").toArray()[0].toObject().value("mode").toString(),
+                 QString("subtract"));
+    }
+
+    void masksAreSanitized()
+    {
+        QTemporaryDir dir;
+        const QString raw = dir.filePath("m.ARW");
+        writeFile(dir.filePath("m.iris.json"), R"({"version": 1, "masks": [
+            {"type": "radial", "radial": {"feather": 7, "rotation": 450}, "adjustments": {"exposure": 12}},
+            {"type": "lasso"},
+            {"type": "brush", "strokes": [{"radius": -1, "points": []}, {"mode": "erase", "points": [[0.5, 0.5]]}]}
+        ]})");
+        const SidecarResult read = readSidecar(raw, defaultEditState(kAsShot));
+        QVERIFY(read.edits.has_value());
+        const std::vector<Mask>& masks = read.edits->masks;
+        QCOMPARE(masks.size(), std::size_t(2)); // unknown type skipped
+        QCOMPARE(masks[0].name, std::string("Radial 1"));
+        QCOMPARE(masks[0].radial.feather, 1.0f);
+        QCOMPARE(masks[0].radial.rotation, 90.0f);
+        QCOMPARE(masks[0].adjustments.exposure, 4.0f);
+        QCOMPARE(masks[1].strokes.size(), std::size_t(1)); // the stroke without points is dropped
+        QCOMPARE(masks[1].strokes[0].mode, BrushMode::Erase);
+
+        // Older sidecars have no masks.
+        writeFile(dir.filePath("m.iris.json"), R"({"version": 1, "adjustments": {}})");
+        QVERIFY(readSidecar(raw, {}).edits->masks.empty());
+    }
+
+    void newMasksGetUniqueNames()
+    {
+        std::vector<Mask> masks = {newMask(MaskType::Brush, {})};
+        masks.push_back(newMask(MaskType::Brush, masks));
+        masks.push_back(newMask(MaskType::Linear, masks));
+        QCOMPARE(masks[1].name, std::string("Brush 2"));
+        QCOMPARE(masks[2].name, std::string("Linear 1"));
+        masks.erase(masks.begin());
+        QCOMPARE(newMask(MaskType::Brush, masks).name, std::string("Brush 1"));
     }
 
     void sidecarMissingValuesUseDefaults()
@@ -187,6 +243,7 @@ private slots:
         state.basic.exposure = 0.7f;
         state.basic.shadows = 30;
         state.basic.whiteBalance = {4800, -3};
+        state.masks = {newMask(MaskType::Radial, {})};
 
         Preset preset;
         preset.name = "Punchy";
@@ -198,6 +255,7 @@ private slots:
         QCOMPARE(applied.basic.shadows, 30.0f);
         QCOMPARE(applied.basic.whiteBalance, state.basic.whiteBalance);
         QCOMPARE(applied.appliedPreset, std::string("Punchy"));
+        QCOMPARE(applied.masks, state.masks); // masks are photo-specific
     }
 
     void relativeWhiteBalanceShift()

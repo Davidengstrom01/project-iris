@@ -54,6 +54,8 @@ public:
     void setFullResolutionNeeded(bool needed);
     // The "before" (unedited) rendering is produced only while it is needed.
     void setBeforeNeeded(bool needed);
+    // Shows the coverage of edits().masks[index] as an overlay (-1 = none). It follows edits.
+    void setMaskOverlay(int index);
 
     std::optional<WhiteBalance> autoWhiteBalance() const;
     // Eyedropper at a normalised image position.
@@ -67,6 +69,8 @@ signals:
     void histogramReady(const iris::Histogram& histogram);
     void beforePreviewReady(const QImage& preview);
     void beforeFullReady(const QImage& image);
+    // Tinted mask coverage at draft resolution; a null image when there is no overlay.
+    void maskOverlayReady(const QImage& overlay);
     void fullImageReady(const QImage& image);
     void fullImageInvalidated();
     void loadFailed(const QString& path, const QString& message);
@@ -88,6 +92,7 @@ private:
     void startRender(Level level);
     void handleRendered(Level level, quint64 version, const RenderResult& result);
     void renderBefore(Level level);
+    void requestOverlay();
     std::shared_ptr<const ImageF> source(Level level) const;
     bool isCurrent(quint64 generation) const { return generation == m_generation->load(); }
 
@@ -111,6 +116,10 @@ private:
 
     bool m_beforeNeeded = false;
     std::array<const ImageF*, LevelCount> m_beforeRendered{}; // source each before image was made from
+
+    int m_overlayMask = -1;
+    bool m_overlayBusy = false;
+    bool m_overlayPending = false;
 
     // Shared with worker threads so they can notice they have been superseded.
     std::shared_ptr<std::atomic<quint64>> m_generation = std::make_shared<std::atomic<quint64>>(0);

@@ -32,6 +32,10 @@ public:
     // Records a change. Mergeable changes with the same label that follow each other
     // quickly (a slider drag) become one undo step.
     void edit(const iris::EditState& state, const QString& label, bool mergeable = false);
+    // Between these, mergeable edits with the same label become one undo step however long
+    // the gesture takes (a brush stroke), and never merge with an earlier step.
+    void beginGesture();
+    void endGesture();
 
     bool canUndo() const { return m_history.canUndo(); }
     bool canRedo() const { return m_history.canRedo(); }
@@ -58,6 +62,8 @@ private:
     EditState m_saved;
     EditHistory m_history;
     QElapsedTimer m_lastEdit;
+    bool m_inGesture = false;
+    bool m_gestureRecorded = false; // the current gesture has its undo step
 };
 
 } // namespace iris::ui

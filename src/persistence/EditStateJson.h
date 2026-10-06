@@ -2,9 +2,11 @@
 
 #include "core/EditState.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 
 #include <optional>
+#include <vector>
 
 namespace iris {
 
@@ -26,5 +28,14 @@ QJsonObject hslToJson(const HslAdjustments& hsl);
 
 // Reads HSL adjustments; missing ranges and values are 0.
 HslAdjustments readHsl(const QJsonValue& json);
+
+// [{"type": "radial", "name": "Radial 1", "invert": false, "radial": {...},
+//   "strokes": [{"mode": "add", "radius": 0.05, ..., "points": [[0.1, 0.2], ...]}],
+//   "adjustments": {"exposure": 0.5, ...}}, ...]
+// Only the shape of the mask's own type is written.
+QJsonArray masksToJson(const std::vector<Mask>& masks);
+
+// Reads masks; unknown mask types are skipped. Values are clamped to their valid ranges.
+std::vector<Mask> readMasks(const QJsonValue& json);
 
 } // namespace iris

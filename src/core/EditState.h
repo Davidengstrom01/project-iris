@@ -1,10 +1,13 @@
 #pragma once
 
+#include "core/Crop.h"
 #include "core/Curve.h"
 #include "core/Hsl.h"
+#include "core/Mask.h"
 
 #include <array>
 #include <string>
+#include <vector>
 
 namespace iris {
 
@@ -37,6 +40,8 @@ struct EditState {
     BasicAdjustments basic;
     ToneCurve toneCurve;
     HslAdjustments hsl;
+    std::vector<Mask> masks; // local adjustments, applied in order
+    Crop crop;
     std::string appliedPreset; // name of the last preset applied, if any
 
     bool operator==(const EditState&) const = default;

@@ -45,15 +45,30 @@ void EditDocument::edit(const EditState& state, const QString& label, bool merge
 {
     if (!m_loaded || state == edits())
         return;
-    const bool merge = mergeable && m_lastEdit.isValid() && m_lastEdit.elapsed() < kMergeWindowMs &&
-                       m_history.latestLabel() == label.toStdString();
+    const bool sameLabel = m_history.latestLabel() == label.toStdString();
+    const bool merge = m_inGesture ? mergeable && m_gestureRecorded && sameLabel
+                                   : mergeable && m_lastEdit.isValid() && m_lastEdit.elapsed() < kMergeWindowMs && sameLabel;
     m_history.record(state, label.toStdString(), merge);
+    if (m_inGesture)
+        m_gestureRecorded = true;
     if (mergeable)
         m_lastEdit.start();
     else
         m_lastEdit.invalidate();
     emit editsChanged(edits());
     emit stateChanged();
+}
+
+void EditDocument::beginGesture()
+{
+    m_inGesture = true;
+    m_gestureRecorded = false;
+}
+
+void EditDocument::endGesture()
+{
+    m_inGesture = false;
+    m_lastEdit.invalidate(); // the next edit starts a new step
 }
 
 void EditDocument::undo()

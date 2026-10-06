@@ -1,8 +1,12 @@
 #pragma once
 
+#include "ui/MaskEditor.h"
+
 #include <QImage>
 #include <QPointF>
 #include <QWidget>
+
+#include <optional>
 
 namespace iris::ui {
 
@@ -39,6 +43,16 @@ public:
 
     // Eyedropper mode: the next click reports an image position instead of panning.
     void setPickMode(bool enabled);
+    bool isPicking() const { return m_pickMode; }
+
+    // Mask editing: while a mask is set, dragging paints or reshapes it instead of panning
+    // (pan with the middle button or Space + drag).
+    void setMask(const std::optional<iris::Mask>& mask);
+    bool isEditingMask() const { return m_maskEditor.isActive(); }
+    void setMaskTool(MaskEditor::Tool tool);
+    void setBrush(const MaskEditor::Brush& brush);
+    // Coverage of the mask being edited, tinted (ARGB); a null image hides the overlay.
+    void setMaskOverlay(const QImage& overlay);
 
 public slots:
     void fitToWindow();
@@ -50,6 +64,10 @@ signals:
     void zoomChanged(double zoom, bool fit);
     void pointPicked(const QPointF& normalizedPosition);
     void pickCancelled();
+    // A mask gesture (one brush stroke, one handle drag) begins, changes the mask, and ends.
+    void maskGestureStarted();
+    void maskEdited(const iris::Mask& mask, const QString& label);
+    void maskGestureFinished();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -60,6 +78,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     double fitZoom() const;
@@ -73,6 +93,8 @@ private:
     void drawPhoto(QPainter& painter, const QImage& preview, const QImage& full, const QRectF& clip);
     void drawLabel(QPainter& painter, const QString& text, const QPointF& anchor, Qt::Alignment side);
     double splitX() const { return width() * m_split; }
+    MaskEditor::Mapping maskMapping() const;
+    void updateMouseTracking();
 
     QImage m_preview;
     QImage m_full;
@@ -92,7 +114,12 @@ private:
 
     bool m_pickMode = false;
     bool m_panning = false;
+    bool m_spaceHeld = false;
     QPointF m_lastPanPos;
+
+    MaskEditor m_maskEditor;
+    QImage m_maskOverlay;
+    std::optional<QPointF> m_cursorPos; // for the brush outline
 };
 
 } // namespace iris::ui
