@@ -8,8 +8,8 @@ use iris_core::EditState;
 use serde_json::{Map, Value, json};
 
 use crate::json::{
-    adjustments_to_json, hsl_to_json, masks_to_json, read_adjustments, read_hsl, read_masks, read_tone_curve,
-    tone_curve_to_json,
+    adjustments_to_json, crop_to_json, hsl_to_json, masks_to_json, read_adjustments, read_crop, read_hsl, read_masks,
+    read_tone_curve, tone_curve_to_json,
 };
 use crate::{Error, read_json_object, write_atomically};
 
@@ -58,6 +58,7 @@ pub fn read_sidecar_file(sidecar_path: &Path, defaults: &EditState) -> Result<Op
     }
     edits.hsl = read_hsl(json.get("hsl"));
     edits.masks = read_masks(json.get("masks"));
+    edits.crop = read_crop(json.get("crop"));
     edits.applied_preset = json.get("preset").and_then(Value::as_str).unwrap_or_default().to_owned();
     Ok(Some(edits))
 }
@@ -80,6 +81,9 @@ pub fn sidecar_json(raw_path: &Path, edits: &EditState) -> Value {
     json.insert("toneCurve".into(), tone_curve_to_json(&edits.tone_curve));
     json.insert("hsl".into(), hsl_to_json(&edits.hsl));
     json.insert("masks".into(), masks_to_json(&edits.masks));
+    if let Some(crop) = crop_to_json(&edits.crop) {
+        json.insert("crop".into(), crop);
+    }
     Value::Object(json)
 }
 
@@ -157,6 +161,41 @@ mod tests {
         assert_eq!(masks[0]["name"], "Radial 1");
         assert!(masks[0].get("linear").is_none()); // only the mask's own shape
         assert_eq!(masks[1]["strokes"][0]["mode"], "subtract");
+    }
+
+    #[test]
+    fn crop_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("c.ARW");
+        let mut edits = EditState::new(AS_SHOT);
+        edits.crop = iris_core::Crop {
+            quarter_turns: 1,
+            angle: -2.5,
+            left: 0.125,
+            top: 0.0,
+            right: 0.875,
+            bottom: 0.75,
+            aspect: 1.5,
+        };
+        write_sidecar(&sidecar_path_for(&raw), &raw, &edits).unwrap();
+        assert_eq!(read_sidecar(&raw, &EditState::new(AS_SHOT)).unwrap().unwrap(), edits);
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert_eq!(json["crop"]["quarterTurns"], 1);
+        assert_eq!(json["crop"]["angle"], -2.5);
+
+        // An uncropped photo has no crop key; out-of-range values are clamped on reading.
+        write_sidecar(&sidecar_path_for(&raw), &raw, &EditState::new(AS_SHOT)).unwrap();
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert!(json.get("crop").is_none());
+        fs::write(
+            sidecar_path_for(&raw),
+            r#"{"version": 1, "crop": {"quarterTurns": 7, "angle": 90, "left": 0.9, "right": 0.2}}"#,
+        )
+        .unwrap();
+        let crop = read_sidecar(&raw, &EditState::default()).unwrap().unwrap().crop;
+        assert_eq!(crop.quarter_turns, 3);
+        assert_eq!(crop.angle, 45.0);
+        assert!(crop.right > crop.left);
     }
 
     #[test]

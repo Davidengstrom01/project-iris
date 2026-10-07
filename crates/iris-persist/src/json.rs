@@ -231,3 +231,38 @@ pub fn read_masks(json: Option<&Value>) -> Vec<Mask> {
     }
     masks
 }
+
+/// `{"quarterTurns": 1, "angle": -2.5, "left": 0.1, "top": 0, "right": 0.9, "bottom": 1, "aspect": 1.5}`;
+/// `None` for an uncropped, unrotated photo (the key is then left out).
+pub fn crop_to_json(crop: &iris_core::Crop) -> Option<Value> {
+    if crop.is_identity() && crop.aspect == 0.0 {
+        return None;
+    }
+    Some(json!({
+        "quarterTurns": crop.quarter_turns,
+        // Full precision: a fitted, straightened crop must stay inside the photo.
+        "angle": number(crop.angle),
+        "left": number(crop.left),
+        "top": number(crop.top),
+        "right": number(crop.right),
+        "bottom": number(crop.bottom),
+        "aspect": number(crop.aspect),
+    }))
+}
+
+/// Reads a crop; missing values are the uncropped defaults. Values are clamped (the
+/// rectangle is fitted to the photo once its size is known).
+pub fn read_crop(json: Option<&Value>) -> iris_core::Crop {
+    let object = json.and_then(Value::as_object);
+    let d = iris_core::Crop::default();
+    iris_core::Crop {
+        quarter_turns: object.and_then(|o| o.get("quarterTurns")).and_then(Value::as_i64).unwrap_or(0) as i32,
+        angle: f32_or(object, "angle", d.angle),
+        left: f32_or(object, "left", d.left),
+        top: f32_or(object, "top", d.top),
+        right: f32_or(object, "right", d.right),
+        bottom: f32_or(object, "bottom", d.bottom),
+        aspect: f32_or(object, "aspect", d.aspect),
+    }
+    .sanitized()
+}

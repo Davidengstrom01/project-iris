@@ -18,11 +18,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use egui::Color32;
-use iris_core::{EditState, ImageF, Mask, PhotoMetadata, WhiteBalance};
+use iris_core::crop::Affine;
+use iris_core::{Crop, EditState, ImageF, Mask, PhotoMetadata, WhiteBalance};
 use iris_export::{ExportSettings, export_image};
 use iris_raw::{DecodeQuality, decode};
 use iris_render::{
-    Histogram, RenderOptions, downscale_to_fit, estimate_white_balance, render, render_mask_coverage,
+    Histogram, RenderOptions, crop_gray, downscale_to_fit, estimate_white_balance, render, render_mask_coverage,
     sample_white_balance,
 };
 
@@ -35,6 +36,9 @@ const PREVIEW_LONG_EDGE: usize = 3200;
 const SETTLE_DELAY: Duration = Duration::from_millis(200);
 const OVERLAY_COLOR: [u8; 3] = [255, 48, 64];
 const OVERLAY_OPACITY: f32 = 0.5;
+/// Stack of decode and render threads: LibRaw and nested parallel work need more than the
+/// 2 MB default (this is what the C++ version's thread pool had).
+pub const WORKER_STACK: usize = 8 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -52,13 +56,35 @@ pub enum Update {
     Immediate,
 }
 
+/// Where the photo lies in a rendering, in full-resolution pixels: renderings are cropped
+/// and rotated, while masks and the eyedropper work in photo coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Framing {
+    pub photo_size: [usize; 2],
+    pub result_size: [usize; 2],
+    pub photo_to_result: Affine,
+}
+
+impl Framing {
+    pub fn new(crop: &Crop, photo_size: [usize; 2], whole_frame: bool) -> Self {
+        let g = crop.geometry(photo_size[0], photo_size[1], whole_frame);
+        let transformed =
+            crop.quarter_turns.rem_euclid(4) != 0 || crop.angle != 0.0 || (!whole_frame && crop.has_rectangle());
+        if transformed {
+            Self { photo_size, result_size: [g.width, g.height], photo_to_result: g.photo_to_result }
+        } else {
+            Self { photo_size, result_size: photo_size, photo_to_result: Affine::IDENTITY }
+        }
+    }
+}
+
 /// What happened since the last [`PhotoSession::poll`].
 pub enum SessionEvent {
     MetadataReady(PhotoMetadata),
-    /// A rendering of the whole photo; `full_size` is the full-resolution size.
+    /// A rendering of the whole (cropped) photo, and where the photo lies in it.
     PreviewReady {
         image: TiledImage,
-        full_size: [usize; 2],
+        framing: Framing,
         histogram: Box<Histogram>,
     },
     BeforePreviewReady(TiledImage),
@@ -85,11 +111,33 @@ struct Decoded {
 }
 
 enum WorkerMessage {
-    Decoded { generation: u64, full_resolution: bool, result: Result<Decoded, Option<String>> },
-    Rendered { level: Level, generation: u64, version: u64, image: TiledImage, histogram: Option<Box<Histogram>> },
-    Before { level: Level, generation: u64, image: TiledImage },
-    Overlay { generation: u64, image: TiledImage },
-    Exported { path: PathBuf, error: Option<String> },
+    Decoded {
+        generation: u64,
+        full_resolution: bool,
+        result: Result<Decoded, Option<String>>,
+    },
+    Rendered {
+        level: Level,
+        generation: u64,
+        version: u64,
+        image: TiledImage,
+        histogram: Option<Box<Histogram>>,
+        crop: Crop,
+        whole_frame: bool,
+    },
+    Before {
+        level: Level,
+        generation: u64,
+        image: TiledImage,
+    },
+    Overlay {
+        generation: u64,
+        image: TiledImage,
+    },
+    Exported {
+        path: PathBuf,
+        error: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -129,8 +177,10 @@ pub struct PhotoSession {
     settle_deadline: Option<Instant>,
 
     before_needed: bool,
-    /// Source each "before" image was made from.
-    before_rendered: [usize; 3],
+    /// Source and crop each "before" image was made from.
+    before_rendered: [Option<(usize, Crop, bool)>; 3],
+    /// While cropping, renderings show the whole straightened frame.
+    whole_frame: bool,
 
     overlay_mask: Option<usize>,
     overlay_busy: bool,
@@ -167,7 +217,8 @@ impl PhotoSession {
             full_needed: false,
             settle_deadline: None,
             before_needed: false,
-            before_rendered: [0; 3],
+            before_rendered: [None; 3],
+            whole_frame: false,
             overlay_mask: None,
             overlay_busy: false,
             overlay_pending: false,
@@ -200,12 +251,16 @@ impl PhotoSession {
     fn spawn(&self, job: impl FnOnce() -> Option<WorkerMessage> + Send + 'static) {
         let sender = self.sender.clone();
         let repaint = self.repaint.clone();
-        std::thread::spawn(move || {
-            if let Some(message) = job() {
-                let _ = sender.send(message);
-                repaint.request_repaint();
-            }
-        });
+        std::thread::Builder::new()
+            .name("iris-worker".into())
+            .stack_size(WORKER_STACK)
+            .spawn(move || {
+                if let Some(message) = job() {
+                    let _ = sender.send(message);
+                    repaint.request_repaint();
+                }
+            })
+            .expect("cannot start a worker thread");
     }
 
     pub fn open(&mut self, path: &Path) {
@@ -223,7 +278,7 @@ impl PhotoSession {
         self.shown_level = None;
         self.full_version = 0;
         self.settle_deadline = None;
-        self.before_rendered = [0; 3];
+        self.before_rendered = [None; 3];
         self.overlay_mask = None;
 
         for full_resolution in [false, true] {
@@ -275,10 +330,11 @@ impl PhotoSession {
                     self.handle_decoded(full_resolution, result);
                 }
             }
-            WorkerMessage::Rendered { level, generation, version, image, histogram } => {
+            WorkerMessage::Rendered { level, generation, version, image, histogram, crop, whole_frame } => {
                 self.slots[level as usize].busy = false;
                 if generation == current {
-                    self.handle_rendered(level, version, image, histogram);
+                    let framing = Framing::new(&crop, [self.metadata.width, self.metadata.height], whole_frame);
+                    self.handle_rendered(level, version, image, histogram, framing);
                 }
                 if self.slots[level as usize].pending {
                     self.request_render(level);
@@ -356,13 +412,42 @@ impl PhotoSession {
         }
     }
 
+    /// The edits as they affect the rendering: while cropping, the crop rectangle does not.
+    fn rendered_edits(&self, edits: &EditState) -> EditState {
+        let mut edits = edits.clone();
+        if self.whole_frame {
+            edits.crop = Crop { quarter_turns: edits.crop.quarter_turns, angle: edits.crop.angle, ..Crop::default() };
+        }
+        edits
+    }
+
     /// Sets the edits to render. Until the first call for a photo, nothing is rendered.
     pub fn set_edits(&mut self, edits: &EditState, update: Update) {
-        if self.edits_ready && *edits == self.edits {
+        if self.edits_ready && self.rendered_edits(edits) == self.rendered_edits(&self.edits) {
+            self.edits = edits.clone();
             return;
         }
         self.edits = edits.clone();
         self.edits_ready = true;
+        self.invalidate(update);
+    }
+
+    /// While cropping, renderings show the whole straightened frame.
+    pub fn set_whole_frame(&mut self, whole_frame: bool) {
+        if whole_frame == self.whole_frame {
+            return;
+        }
+        self.whole_frame = whole_frame;
+        if self.edits_ready {
+            self.invalidate(Update::Immediate);
+            if self.before_needed {
+                self.set_before_needed(true);
+            }
+        }
+    }
+
+    /// Everything on screen is out of date: render it again.
+    fn invalidate(&mut self, update: Update) {
         self.edit_version += 1;
         if self.full_version != 0 {
             self.full_version = 0;
@@ -421,6 +506,7 @@ impl PhotoSession {
             return;
         }
         let mask: Option<Mask> = self.overlay_mask.and_then(|i| self.edits.masks.get(i).cloned());
+        let (crop, whole_frame) = (self.edits.crop, self.whole_frame);
         let (Some(mask), Some(source)) = (mask, &self.draft_source) else {
             self.events.push(SessionEvent::MaskOverlayReady(None));
             return;
@@ -432,6 +518,8 @@ impl PhotoSession {
         let tile = tile_size(&self.repaint);
         self.spawn(move || {
             let coverage = render_mask_coverage(&mask, width, height);
+            // The overlay lies on the rendering, so it is cropped like the photo.
+            let (width, height, coverage) = crop_gray(&coverage, width, height, &crop, whole_frame);
             let pixels: Vec<Color32> = coverage
                 .iter()
                 .map(|&c| {
@@ -453,17 +541,21 @@ impl PhotoSession {
     }
 
     fn render_before(&mut self, level: Level) {
-        // The unedited photo does not change while editing; render each source only once.
+        // The unedited photo, with the same crop so it lines up with the edited one. It does
+        // not change while editing; render each source and crop only once.
         let Some(image) = self.source(level).cloned() else { return };
-        if self.before_rendered[level as usize] == identity(&image) {
+        let key = Some((identity(&image), self.edits.crop, self.whole_frame));
+        if self.before_rendered[level as usize] == key {
             return;
         }
-        self.before_rendered[level as usize] = identity(&image);
+        self.before_rendered[level as usize] = key;
         let as_shot = self.metadata.as_shot;
+        let before = EditState { crop: self.edits.crop, ..EditState::new(as_shot) };
+        let options = RenderOptions { whole_frame: self.whole_frame, ..Default::default() };
         let generation = self.current_generation();
         let tile = tile_size(&self.repaint);
         self.spawn(move || {
-            let encoded = render(&image, &as_shot, &EditState::new(as_shot), &RenderOptions::default());
+            let encoded = render(&image, &as_shot, &before, &options);
             Some(WorkerMessage::Before { level, generation, image: TiledImage::from_encoded(&encoded, tile) })
         });
     }
@@ -491,11 +583,13 @@ impl PhotoSession {
 
         let as_shot = self.metadata.as_shot;
         let edits = self.edits.clone();
+        let whole_frame = self.whole_frame;
+        let options = RenderOptions { whole_frame, ..Default::default() };
         let generation = self.current_generation();
         let version = self.edit_version;
         let tile = tile_size(&self.repaint);
         self.spawn(move || {
-            let encoded = render(&image, &as_shot, &edits, &RenderOptions::default());
+            let encoded = render(&image, &as_shot, &edits, &options);
             let histogram = (level != Level::Full).then(|| Box::new(Histogram::compute(&encoded)));
             Some(WorkerMessage::Rendered {
                 level,
@@ -503,11 +597,20 @@ impl PhotoSession {
                 version,
                 image: TiledImage::from_encoded(&encoded, tile),
                 histogram,
+                crop: edits.crop,
+                whole_frame,
             })
         });
     }
 
-    fn handle_rendered(&mut self, level: Level, version: u64, image: TiledImage, histogram: Option<Box<Histogram>>) {
+    fn handle_rendered(
+        &mut self,
+        level: Level,
+        version: u64,
+        image: TiledImage,
+        histogram: Option<Box<Histogram>>,
+        framing: Framing,
+    ) {
         if level == Level::Full {
             if version == self.edit_version {
                 self.full_version = version;
@@ -520,8 +623,7 @@ impl PhotoSession {
         if version > self.shown_version || (version == self.shown_version && Some(level) >= self.shown_level) {
             self.shown_version = version;
             self.shown_level = Some(level);
-            let full_size = [self.metadata.width, self.metadata.height];
-            self.events.push(SessionEvent::PreviewReady { image, full_size, histogram: histogram.unwrap_or_default() });
+            self.events.push(SessionEvent::PreviewReady { image, framing, histogram: histogram.unwrap_or_default() });
         }
         if level == Level::Preview && version == self.edit_version && self.full_needed && self.full_version != version {
             self.request_render(Level::Full);

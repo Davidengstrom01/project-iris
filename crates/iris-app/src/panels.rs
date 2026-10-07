@@ -108,6 +108,65 @@ pub fn develop(
     ui.add_space(8.0);
 }
 
+// --- Crop -------------------------------------------------------------------------
+
+pub fn crop(ui: &mut Ui, crop: &iris_core::Crop, photo_size: [usize; 2], cropping: bool, actions: &mut Vec<Action>) {
+    use crate::crop_tool::{ASPECTS, Aspect};
+    panel_title(ui, "CROP & ROTATE", |ui| {
+        if small_button(ui, "Reset", "Remove the crop and rotation").clicked() {
+            actions.push(Action::ResetCrop);
+        }
+        let label = if cropping { "Done" } else { "Crop" };
+        let tip = if cropping { "Finish cropping (Enter)" } else { "Crop on the photo (R)" };
+        if small_toggle(ui, cropping, label, tip).clicked() {
+            actions.push(Action::ToggleCrop);
+        }
+    });
+    padded(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Aspect").color(theme::LABEL_TEXT));
+            let current = Aspect::of(crop, photo_size).map_or("Custom".to_owned(), Aspect::name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if small_button(ui, "Swap", "Swap portrait and landscape (X)").clicked() {
+                    actions.push(Action::SwapCropAspect);
+                }
+                egui::ComboBox::from_id_salt("crop-aspect").width(ui.available_width()).selected_text(current).show_ui(
+                    ui,
+                    |ui| {
+                        for aspect in ASPECTS {
+                            if ui
+                                .selectable_label(Aspect::of(crop, photo_size) == Some(aspect), aspect.name())
+                                .clicked()
+                            {
+                                actions.push(Action::SetCropAspect(aspect));
+                            }
+                        }
+                    },
+                );
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Rotate").color(theme::LABEL_TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if small_button(ui, "Right ⟳", "Rotate 90° clockwise (Ctrl+])").clicked() {
+                    actions.push(Action::RotateQuarter(true));
+                }
+                if small_button(ui, "⟲ Left", "Rotate 90° counter-clockwise (Ctrl+[)").clicked() {
+                    actions.push(Action::RotateQuarter(false));
+                }
+            });
+        });
+    });
+    let max = f64::from(iris_core::crop::MAX_STRAIGHTEN_ANGLE);
+    if let Some(angle) = Slider::new("Straighten", -max, max, 1)
+        .tooltip("Degrees; double-click to reset")
+        .show(ui, f64::from(crop.angle))
+    {
+        actions.push(Action::Straighten(angle as f32));
+    }
+    ui.add_space(8.0);
+}
+
 // --- Tone curve -------------------------------------------------------------------
 
 pub fn tone_curve(

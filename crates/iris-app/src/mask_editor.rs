@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
+use iris_core::crop::Affine;
 use iris_core::mask::{MAX_POINTS_PER_STROKE, MAX_STROKES_PER_MASK};
 use iris_core::{BrushMode, BrushStroke, LinearGradient, Mask, MaskPoint, MaskType, RadialGradient};
 
@@ -41,12 +42,17 @@ impl Default for Brush {
     }
 }
 
-/// Where the photo is drawn: screen position = origin + image pixel * scale.
+/// Where the photo is drawn: photo pixels -> screen points (a scale, plus the crop's
+/// rotation and offset).
 #[derive(Clone, Copy, Debug)]
 pub struct Mapping {
-    pub origin: Pos2,
+    pub photo_to_screen: Affine,
+    /// Screen points per photo pixel.
     pub scale: f32,
+    /// Photo size in pixels.
     pub image_size: [usize; 2],
+    /// Where the rendering is on screen; gradient lines are clipped to it.
+    pub clip: Rect,
 }
 
 impl Mapping {
@@ -65,13 +71,14 @@ impl Mapping {
 
     /// Screen point -> image pixels.
     fn to_image(self, pos: Pos2) -> Pt {
-        let s = f64::from(self.scale);
-        Pt::new(f64::from(pos.x - self.origin.x) / s, f64::from(pos.y - self.origin.y) / s)
+        let (x, y) = self.photo_to_screen.inverted().map(f64::from(pos.x), f64::from(pos.y));
+        Pt::new(x, y)
     }
 
     /// Image pixels -> screen point.
     fn to_screen(self, p: Pt) -> Pos2 {
-        self.origin + Vec2::new((p.x * f64::from(self.scale)) as f32, (p.y * f64::from(self.scale)) as f32)
+        let (x, y) = self.photo_to_screen.map(p.x, p.y);
+        Pos2::new(x as f32, y as f32)
     }
 
     fn to_mask(self, pos: Pos2) -> MaskPoint {
@@ -467,9 +474,7 @@ impl MaskEditor {
                 let h = linear_handles(&mask.linear, &f);
                 let reach = (f.w + f.h) * 2.0; // long enough to cross the photo
                 let line = |through: Pt| vec![w(through - h.along * reach), w(through + h.along * reach)];
-                let image_rect =
-                    Rect::from_min_size(m.origin, Vec2::new(m.image_size[0] as f32, m.image_size[1] as f32) * m.scale);
-                let clipped = painter.with_clip_rect(image_rect.intersect(painter.clip_rect()));
+                let clipped = painter.with_clip_rect(m.clip.intersect(painter.clip_rect()));
                 draw_outlined(&clipped, line(h.start), false);
                 draw_outlined(&clipped, line(h.center), true);
                 draw_outlined(&clipped, line(h.end), false);
@@ -492,7 +497,7 @@ impl MaskEditor {
                     draw_outlined(painter, ellipse(1.0 - f64::from(mask.radial.feather)), true);
                 }
                 let top = w(h.center - h.v * h.ry);
-                let rotation = top - Vec2::new(h.v.x as f32, h.v.y as f32) * ROTATION_ARM as f32;
+                let rotation = w(h.center - h.v * (h.ry + ROTATION_ARM / f64::from(m.scale)));
                 draw_outlined(painter, vec![top, rotation], false);
                 draw_handle(painter, w(h.center), true);
                 for handle in
@@ -539,7 +544,8 @@ mod tests {
 
     fn mapping() -> Mapping {
         // A 1000 x 500 photo drawn at half size, offset by (10, 20).
-        Mapping { origin: Pos2::new(10.0, 20.0), scale: 0.5, image_size: [1000, 500] }
+        let photo_to_screen = Affine::translate(10.0, 20.0) * Affine::scale(0.5, 0.5);
+        Mapping { photo_to_screen, scale: 0.5, image_size: [1000, 500], clip: Rect::EVERYTHING }
     }
 
     fn screen(m: &Mapping, x: f64, y: f64) -> Pos2 {
@@ -607,6 +613,28 @@ mod tests {
         assert!(editor.drag_to(screen(&m, 600.0, 250.0), &m));
         let r = editor.mask().unwrap().radial;
         assert!((r.x - 0.6).abs() < 1e-4 && (r.width - 0.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn painting_on_a_rotated_photo_lands_on_the_photo() {
+        // A 1000 x 500 photo turned clockwise (a 500 x 1000 rendering), drawn 1:1 at (0, 0).
+        let turned = iris_core::Crop { quarter_turns: 1, ..Default::default() }.geometry(1000, 500, false);
+        let m = Mapping {
+            photo_to_screen: turned.photo_to_result,
+            scale: 1.0,
+            image_size: [1000, 500],
+            clip: Rect::EVERYTHING,
+        };
+        let mut editor = MaskEditor::default();
+        editor.set_mask(Some(&Mask::new(MaskType::Brush, &[])));
+        // The rendering's top-right corner is the photo's top-left corner.
+        assert!(editor.press(Pos2::new(499.0, 1.0), &m, false));
+        let p = editor.mask().unwrap().strokes[0].points[0];
+        assert!(p.x < 0.01 && p.y < 0.01, "{p:?}");
+        // And a screen point maps back where it came from.
+        let image = m.to_image(Pos2::new(100.0, 700.0));
+        let back = m.to_screen(image);
+        assert!((back.x - 100.0).abs() < 1e-3 && (back.y - 700.0).abs() < 1e-3);
     }
 
     #[test]

@@ -8,9 +8,12 @@
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, PointerButton, Pos2, Rect, Sense, Stroke, Ui, Vec2,
 };
-use iris_core::Mask;
+use iris_core::crop::Affine;
+use iris_core::{Crop, Mask};
 
+use crate::crop_tool::{CropTool, FrameMapping};
 use crate::mask_editor::{Brush, Mapping, MaskEditor, Tool};
+use crate::session::Framing;
 use crate::texture::TiledTexture;
 use crate::theme;
 
@@ -44,13 +47,22 @@ pub enum ViewEvent {
         label: &'static str,
     },
     MaskGestureFinished,
+    /// A crop drag begins, changes the crop, and ends.
+    CropGestureStarted,
+    CropEdited(Crop),
+    CropGestureFinished,
+    /// Double-click inside the crop: done cropping.
+    CropDone,
 }
 
 pub struct ImageView {
     preview: Option<TiledTexture>,
     full: Option<TiledTexture>,
-    /// Full-resolution size; defines the image coordinate system.
+    /// Full-resolution size of the rendering (after the crop); defines the image
+    /// coordinate system.
     image_size: [usize; 2],
+    /// Where the photo lies in the rendering.
+    framing: Option<Framing>,
     message: String,
     loading: bool,
 
@@ -76,6 +88,8 @@ pub struct ImageView {
     mask_overlay: Option<TiledTexture>,
     /// For the brush outline.
     cursor_pos: Option<Pos2>,
+    /// While cropping (the rendering then shows the whole straightened frame).
+    crop_tool: Option<CropTool>,
 }
 
 impl Default for ImageView {
@@ -84,6 +98,7 @@ impl Default for ImageView {
             preview: None,
             full: None,
             image_size: [0, 0],
+            framing: None,
             message: "Open a RAW photo to start  (Ctrl+O)".into(),
             loading: false,
             fit: true,
@@ -102,6 +117,7 @@ impl Default for ImageView {
             mask_editor: MaskEditor::default(),
             mask_overlay: None,
             cursor_pos: None,
+            crop_tool: None,
         }
     }
 }
@@ -124,14 +140,26 @@ impl ImageView {
         self.message = message;
     }
 
-    pub fn set_preview(&mut self, preview: TiledTexture, full_size: [usize; 2]) {
+    pub fn set_preview(&mut self, preview: TiledTexture, framing: Framing) {
         let new_photo = self.loading || self.image_size[0] == 0;
+        let resized = framing.result_size != self.image_size;
         self.preview = Some(preview);
-        if new_photo {
+        self.framing = Some(framing);
+        if new_photo || resized {
+            // A new photo, or a new crop: show all of it.
             self.loading = false;
+            self.image_size = framing.result_size;
             self.full = None;
-            self.image_size = full_size;
             self.fit_to_window();
+        }
+    }
+
+    /// Cropping: shows the crop rectangle over the whole frame (None = done cropping).
+    pub fn set_crop_tool(&mut self, crop: Option<(Crop, [usize; 2])>) {
+        match (crop, &mut self.crop_tool) {
+            (Some((crop, photo)), Some(tool)) => tool.set_crop(crop, photo),
+            (Some((crop, photo)), None) => self.crop_tool = Some(CropTool::new(crop, photo)),
+            (None, _) => self.crop_tool = None,
         }
     }
 
@@ -190,6 +218,17 @@ impl ImageView {
     #[cfg(test)]
     pub fn rect(&self) -> Rect {
         self.rect
+    }
+
+    #[cfg(test)]
+    pub fn test_framing(&self) -> Option<Framing> {
+        self.framing
+    }
+
+    /// Where the rendering is on screen.
+    #[cfg(test)]
+    pub fn test_image_rect(&self) -> Rect {
+        self.image_rect()
     }
 
     /// True when the current zoom shows more detail than the preview rendering has.
@@ -319,14 +358,38 @@ impl ImageView {
         if self.fit { format!("Fit  ·  {percent}") } else { percent }
     }
 
+    /// Screen position of the rendering's top-left corner.
+    fn origin(&self) -> Pos2 {
+        self.rect.center() - self.center.to_vec2() * self.logical_scale()
+    }
+
+    /// Photo pixels -> screen, for the mask editor.
     fn mapping(&self) -> Mapping {
         let s = self.logical_scale();
-        Mapping { origin: self.rect.center() - self.center.to_vec2() * s, scale: s, image_size: self.image_size }
+        let origin = self.origin();
+        let (photo_to_result, photo_size) =
+            self.framing.map_or((Affine::IDENTITY, self.image_size), |f| (f.photo_to_result, f.photo_size));
+        Mapping {
+            photo_to_screen: Affine::translate(f64::from(origin.x), f64::from(origin.y))
+                * Affine::scale(f64::from(s), f64::from(s))
+                * photo_to_result,
+            scale: s,
+            image_size: photo_size,
+            clip: self.image_rect(),
+        }
+    }
+
+    /// Frame pixels -> screen, for the crop tool (while cropping, the rendering is the
+    /// whole frame).
+    fn frame_mapping(&self) -> FrameMapping {
+        FrameMapping { origin: self.origin(), scale: self.logical_scale(), frame_size: self.image_size }
     }
 
     fn image_rect(&self) -> Rect {
-        let m = self.mapping();
-        Rect::from_min_size(m.origin, Vec2::new(self.image_size[0] as f32, self.image_size[1] as f32) * m.scale)
+        Rect::from_min_size(
+            self.origin(),
+            Vec2::new(self.image_size[0] as f32, self.image_size[1] as f32) * self.logical_scale(),
+        )
     }
 
     fn split_x(&self) -> f32 {
@@ -391,12 +454,14 @@ impl ImageView {
         if (primary_pressed || middle_pressed) && has_image {
             let at = pos.unwrap_or_default();
             if self.pick_mode && primary_pressed {
+                // Rendering pixels -> photo pixels.
                 let p = self.widget_to_image(at);
-                if p.x >= 0.0 && p.y >= 0.0 && p.x < self.image_size[0] as f32 && p.y < self.image_size[1] as f32 {
-                    events.push(ViewEvent::PointPicked(
-                        f64::from(p.x) / self.image_size[0] as f64,
-                        f64::from(p.y) / self.image_size[1] as f64,
-                    ));
+                let (to_photo, [pw, ph]) = self
+                    .framing
+                    .map_or((Affine::IDENTITY, self.image_size), |f| (f.photo_to_result.inverted(), f.photo_size));
+                let (x, y) = to_photo.map(f64::from(p.x), f64::from(p.y));
+                if x >= 0.0 && y >= 0.0 && x < pw as f64 && y < ph as f64 {
+                    events.push(ViewEvent::PointPicked(x / pw as f64, y / ph as f64));
                 }
             } else if self.compare == CompareMode::Split
                 && primary_pressed
@@ -406,7 +471,15 @@ impl ImageView {
             } else {
                 // Middle button, or Space + drag, pans; while editing a mask a plain drag edits it.
                 let pan_gesture = middle_pressed || (primary_pressed && space_held);
-                if !pan_gesture && self.mask_editor.is_active() {
+                let frame = self.frame_mapping();
+                if !pan_gesture && let Some(tool) = &mut self.crop_tool {
+                    if primary_pressed && tool.press(at, &frame) {
+                        events.push(ViewEvent::CropGestureStarted);
+                    } else if !self.fit {
+                        self.panning = true;
+                        self.last_pan_pos = at;
+                    }
+                } else if !pan_gesture && self.mask_editor.is_active() {
                     if primary_pressed && self.mask_editor.press(at, &mapping, input.modifiers.alt) {
                         events.push(ViewEvent::MaskGestureStarted);
                         if self.mask_editor.tool() == Tool::Brush {
@@ -425,8 +498,13 @@ impl ImageView {
         if self.mask_editor.is_active() {
             self.cursor_pos = pointer.hover_pos().filter(|p| rect.contains(*p));
         }
+        let frame = self.frame_mapping();
         if let Some(at) = pos {
-            if self.mask_editor.is_dragging() {
+            if let Some(tool) = self.crop_tool.as_mut().filter(|t| t.is_dragging()) {
+                if let Some(crop) = tool.drag_to(at, &frame) {
+                    events.push(ViewEvent::CropEdited(crop));
+                }
+            } else if self.mask_editor.is_dragging() {
                 if self.mask_editor.drag_to(at, &mapping) {
                     events.push(self.mask_edited());
                 }
@@ -444,6 +522,9 @@ impl ImageView {
         if pointer.button_released(PointerButton::Primary) || pointer.button_released(PointerButton::Middle) {
             if self.dragging_split {
                 self.dragging_split = false;
+            } else if let Some(tool) = self.crop_tool.as_mut().filter(|t| t.is_dragging()) {
+                tool.release();
+                events.push(ViewEvent::CropGestureFinished);
             } else if self.mask_editor.is_dragging() && pointer.button_released(PointerButton::Primary) {
                 self.mask_editor.release();
                 events.push(ViewEvent::MaskGestureFinished);
@@ -452,13 +533,12 @@ impl ImageView {
             }
         }
 
-        // Double-click toggles fit / 100% at the cursor.
-        if pointer.button_double_clicked(PointerButton::Primary)
-            && response.hovered()
-            && has_image
-            && !self.pick_mode
-            && !self.mask_editor.is_active()
-        {
+        // Double-click toggles fit / 100% at the cursor; inside the crop it finishes cropping.
+        let double_clicked = pointer.button_double_clicked(PointerButton::Primary) && response.hovered() && has_image;
+        let in_crop = |p: Pos2| self.crop_tool.as_ref().and_then(|t| t.hit(p, &frame)).is_some();
+        if double_clicked && pos.is_some_and(in_crop) {
+            events.push(ViewEvent::CropDone);
+        } else if double_clicked && !self.pick_mode && !self.mask_editor.is_active() && self.crop_tool.is_none() {
             if self.fit {
                 self.set_zoom(1.0, pos.unwrap_or(rect.center()));
             } else {
@@ -492,6 +572,14 @@ impl ImageView {
                 && hover.is_some_and(|p| (p.x - self.split_x()).abs() <= SPLIT_GRAB))
         {
             CursorIcon::ResizeHorizontal
+        } else if let Some(handle) = self
+            .crop_tool
+            .as_ref()
+            .filter(|_| !space_held)
+            .zip(hover)
+            .and_then(|(t, p)| t.hit(p, &self.frame_mapping()))
+        {
+            handle.cursor()
         } else if self.mask_editor.is_active() && has_image && !space_held {
             if hover.is_some_and(|p| self.mask_editor.is_over_handle(p, &self.mapping())) {
                 CursorIcon::Move
@@ -524,10 +612,15 @@ impl ImageView {
         painter.rect_filled(rect, CornerRadius::ZERO, theme::VIEW_BACKGROUND);
 
         if self.preview.is_some() && self.image_size[0] > 0 {
-            // While the "before" rendering is not ready yet, show the edited one.
+            // While the "before" rendering is not ready yet (or still has the previous crop),
+            // show the edited one.
+            let fits = |t: &TiledTexture| {
+                let (a, b) = (t.width as f32 / t.height as f32, self.image_size[0] as f32 / self.image_size[1] as f32);
+                (a / b - 1.0).abs() < 0.01
+            };
             let (before_preview, before_full) = match &self.before_preview {
-                Some(before) => (Some(before), self.before_full.as_ref()),
-                None => (self.preview.as_ref(), self.full.as_ref()),
+                Some(before) if fits(before) => (Some(before), self.before_full.as_ref().filter(|f| fits(f))),
+                _ => (self.preview.as_ref(), self.full.as_ref()),
             };
             match self.compare {
                 CompareMode::Off => {
@@ -551,6 +644,9 @@ impl ImageView {
                     draw_label(painter, "Before", Pos2::new(x - 10.0, rect.top() + 12.0), Align2::RIGHT_TOP);
                     draw_label(painter, "After", Pos2::new(x + 10.0, rect.top() + 12.0), Align2::LEFT_TOP);
                 }
+            }
+            if let Some(tool) = &self.crop_tool {
+                tool.paint(&painter.with_clip_rect(rect), &self.frame_mapping());
             }
             let brush_hidden = self.mask_editor.tool() == Tool::Brush && space_held;
             self.mask_editor.paint(painter, &self.mapping(), if brush_hidden { None } else { self.cursor_pos });

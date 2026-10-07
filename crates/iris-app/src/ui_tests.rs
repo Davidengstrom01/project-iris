@@ -226,6 +226,123 @@ fn ui_custom_presets() {
     assert_eq!(h.state().test_edits().basic.exposure, 0.0);
 }
 
+#[test]
+fn ui_crop_and_rotate() {
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    let [w, h0] = h.state().test_full_size();
+    let size = |app: &IrisApp| app.test_size_label().to_owned();
+    assert_eq!(size(h.state()), format!("{w} × {h0}"));
+
+    // R starts cropping; drag the right edge halfway in.
+    press(&mut h, Modifiers::NONE, Key::R);
+    assert!(h.state().test_cropping());
+    let image = h.state().view().test_image_rect();
+    drag(&mut h, image.right_center(), image.center());
+    let crop = h.state().test_edits().crop;
+    assert!((crop.right - 0.5).abs() < 0.02, "{crop:?}");
+    assert_eq!(crop.left, 0.0);
+    // While cropping the whole frame stays on screen.
+    assert_eq!(size(h.state()), format!("{w} × {h0}"));
+
+    // Enter finishes; the rendering is the cropped part.
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(!h.state().test_cropping());
+    let cropped_width = (crop.right * w as f32).round() as usize;
+    let expected = format!("{cropped_width} × {h0}");
+    wait_until(&mut h, "the cropped preview", |app| app.test_size_label() == expected);
+
+    // The drag was one undo step.
+    press(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(h.state().test_edits().crop, iris_core::Crop::default());
+    press(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    assert_eq!(h.state().test_edits().crop, crop);
+
+    // Ctrl+] turns the photo clockwise, crop included.
+    press(&mut h, Modifiers::COMMAND, Key::CloseBracket);
+    let expected = format!("{h0} × {cropped_width}");
+    wait_until(&mut h, "the rotated preview", |app| app.test_size_label() == expected);
+    assert_eq!(h.state().test_edits().crop.quarter_turns, 1);
+
+    // Straightening keeps the crop inside the photo.
+    h.state_mut().test_apply(Action::Straighten(6.0));
+    let crop = h.state().test_edits().crop;
+    assert_eq!(crop.angle, 6.0);
+    assert!(crop.fits_photo(w, h0));
+
+    // A locked aspect ratio.
+    h.state_mut().test_apply(Action::SetCropAspect(crate::crop_tool::Aspect::Ratio(1, 1)));
+    let crop = h.state().test_edits().crop;
+    assert!((crop.pixel_aspect(w, h0) - 1.0).abs() < 0.01);
+
+    let [cw, ch] = crate::session::Framing::new(&crop, [w, h0], false).result_size;
+    let expected = format!("{cw} × {ch}");
+    wait_until(&mut h, "the square preview", |app| app.test_size_label() == expected);
+
+    // Export: the file has the cropped size.
+    press(&mut h, Modifiers::COMMAND, Key::E);
+    click(&mut h, "Export");
+    wait_until(&mut h, "the export", |app| app.test_exports_running() == 0);
+    assert_eq!(image_size(&f.photo_a.with_extension("jpg")), [cw, ch]);
+
+    // Saved with the photo, and restored on reopening.
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    let saved = h.state().test_edits().crop;
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    assert_eq!(h.state().test_edits().crop, saved);
+}
+
+/// Screenshots of the main states, for looking at the UI without a display:
+///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
+#[test]
+fn ui_screenshots() {
+    let (Some(f), Some(dir)) = (fixture(), std::env::var_os("IRIS_TEST_SCREENSHOTS").map(PathBuf::from)) else {
+        return;
+    };
+    let (open, presets) = (f.photo_a.clone(), f.presets.clone());
+    let mut h = Harness::builder()
+        .with_size([1500.0, 950.0])
+        .wgpu()
+        .build_eframe(move |cc| IrisApp::with_preset_directory(cc, Some(open), presets));
+    let shot = |h: &mut Harness<'_, IrisApp>, name: &str| {
+        h.run_steps(5);
+        h.render().expect("render").save(dir.join(name)).unwrap();
+    };
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    shot(&mut h, "01-photo.png");
+
+    press(&mut h, Modifiers::NONE, Key::R);
+    h.state_mut().test_apply(Action::Straighten(4.0));
+    h.state_mut().test_apply(Action::SetCropAspect(crate::crop_tool::Aspect::Ratio(4, 3)));
+    let image = h.state().view().test_image_rect();
+    drag(&mut h, image.right_bottom() - egui::vec2(80.0, 60.0), image.center() + egui::vec2(150.0, 80.0));
+    wait_until(&mut h, "the straightened frame", |app| {
+        app.view().test_framing().is_some_and(|f| f.photo_to_result.m12 != 0.0)
+    });
+    shot(&mut h, "02-cropping.png");
+
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    let crop = h.state().test_edits().crop;
+    let [cw, ch] = crate::session::Framing::new(&crop, h.state().test_full_size(), false).result_size;
+    let expected = format!("{cw} × {ch}");
+    wait_until(&mut h, "the cropped preview", |app| app.test_size_label() == expected);
+    shot(&mut h, "03-cropped.png");
+
+    press(&mut h, Modifiers::NONE, Key::M);
+    let rect = h.state().view().rect();
+    drag(&mut h, rect.center() - egui::vec2(150.0, 0.0), rect.center() + egui::vec2(150.0, 40.0));
+    assert_eq!(h.state().test_edits().masks[0].strokes.len(), 1);
+    // Let the overlay of the stroke (not just the empty mask) arrive.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(1500) {
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    shot(&mut h, "04-mask-on-crop.png");
+}
+
 fn image_size(path: &Path) -> [usize; 2] {
     let data = std::fs::read(path).unwrap();
     // JPEG SOF0/SOF2 marker: height and width follow the marker length and precision.

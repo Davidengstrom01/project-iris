@@ -53,7 +53,7 @@ fn matches_cpp_renders() {
 
     let decoded = decode(&raw, DecodeQuality::Full, &|| false).unwrap();
     let as_shot = decoded.metadata.as_shot;
-    let options = RenderOptions { max_long_edge: 1200, bits_per_channel: 8 };
+    let options = RenderOptions { max_long_edge: 1200, ..Default::default() };
 
     for name in ["neutral", "basic", "curve-hsl", "masks"] {
         let defaults = EditState::new(as_shot);
@@ -74,7 +74,12 @@ fn matches_cpp_renders() {
 
     // 16-bit TIFF.
     let edits = read_sidecar_file(&golden.join("basic.iris.json"), &EditState::new(as_shot)).unwrap().unwrap();
-    let actual = render(&decoded.image, &as_shot, &edits, &RenderOptions { max_long_edge: 600, bits_per_channel: 16 });
+    let actual = render(
+        &decoded.image,
+        &as_shot,
+        &edits,
+        &RenderOptions { max_long_edge: 600, bits_per_channel: 16, ..Default::default() },
+    );
     let expected = image::open(golden.join("basic16.tif")).unwrap().to_rgb16();
     assert_eq!((actual.width as u32, actual.height as u32), expected.dimensions());
     let a: Vec<f64> = actual.data16().iter().map(|&v| f64::from(v) / 257.0).collect();

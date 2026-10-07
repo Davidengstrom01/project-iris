@@ -135,6 +135,7 @@ pub fn export_image(
     let options = RenderOptions {
         max_long_edge: settings.long_edge,
         bits_per_channel: if settings.format == ExportFormat::Jpeg { 8 } else { settings.bits_per_channel },
+        ..Default::default()
     };
     let image = render(full_resolution_source, as_shot, edits, &options);
 

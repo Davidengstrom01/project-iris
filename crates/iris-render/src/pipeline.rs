@@ -9,13 +9,15 @@
 //!     -> RGB tone curve                      (hue-preserving, perceptual space)
 //!     -> HSL: hue / saturation / luminance per colour range (Oklab)
 //!     -> vibrance / saturation
+//!     -> crop / rotation / straighten         (resampled, display-linear)
 //!     -> output colour transform (sRGB)
 //!
-//! Later stages (crop, detail) slot in between.
+//! Later stages (detail) slot in before the crop.
 
 use std::borrow::Cow;
 
 use iris_core::color::{LUMA_B, LUMA_G, LUMA_R, MAX_TEMPERATURE, MIN_TEMPERATURE, inverse, mul, white_balance_matrix};
+use iris_core::crop::{Crop, CropGeometry};
 use iris_core::{EditState, EncodedImage, ImageF, Mask, Samples, WhiteBalance};
 use rayon::prelude::*;
 
@@ -44,15 +46,17 @@ const LB: f32 = LUMA_B as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderOptions {
-    /// 0 = render at source resolution.
+    /// Long edge of the result; 0 = the source's resolution.
     pub max_long_edge: usize,
     /// 8 or 16.
     pub bits_per_channel: u32,
+    /// Ignore the crop rectangle and show the whole straightened frame (while cropping).
+    pub whole_frame: bool,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { max_long_edge: 0, bits_per_channel: 8 }
+        Self { max_long_edge: 0, bits_per_channel: 8, whole_frame: false }
     }
 }
 
@@ -206,113 +210,264 @@ impl LocalStage {
     }
 }
 
-/// Per-thread scratch buffers.
-struct Scratch {
-    row: Vec<f32>,
-    coverage: Vec<Vec<f32>>,
+/// The per-pixel develop stages (everything before the crop), set up for one image.
+struct Develop<'a> {
+    input: &'a ImageF,
+    /// White balance and exposure combined into one matrix.
+    m: [f32; 9],
+    /// Scene luminance of a source pixel after `m`.
+    luma: [f32; 3],
+    regional: RegionalExposure,
+    global_regional: bool,
+    locals: Vec<LocalStage>,
+    base: Option<ToneBaseLayer>,
+    /// Hue-preserving steps compose, so the basic tone and the RGB curve share one table.
+    curve: ToneLut,
+    hsl: HslMixer,
+    presence: Presence,
 }
 
-/// Renders `source` with `edits`. `as_shot` is the white balance the source was decoded
-/// with.
-pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, options: &RenderOptions) -> EncodedImage {
-    // Resize first so every later stage runs at the output resolution.
-    let (width, height) = fit_size(source.width, source.height, options.max_long_edge);
-    let input: Cow<ImageF> = if (width, height) != (source.width, source.height) {
-        Cow::Owned(resize_area(source, width, height))
-    } else {
-        Cow::Borrowed(source)
-    };
-    let input = input.as_ref();
-    let a = &edits.basic;
+impl<'a> Develop<'a> {
+    fn new(input: &'a ImageF, as_shot: &WhiteBalance, edits: &EditState) -> Self {
+        let a = &edits.basic;
+        let wb = white_balance_matrix(as_shot, &a.white_balance);
+        let gain = a.exposure.exp2();
+        let m: [f32; 9] = wb.map(|v| v as f32 * gain);
+        let luma = [
+            (LUMA_R * f64::from(m[0]) + LUMA_G * f64::from(m[3]) + LUMA_B * f64::from(m[6])) as f32,
+            (LUMA_R * f64::from(m[1]) + LUMA_G * f64::from(m[4]) + LUMA_B * f64::from(m[7])) as f32,
+            (LUMA_R * f64::from(m[2]) + LUMA_G * f64::from(m[5]) + LUMA_B * f64::from(m[8])) as f32,
+        ];
+        let global_regional = a.shadows != 0.0 || a.highlights != 0.0;
+        // Masks that change nothing are skipped.
+        let locals: Vec<LocalStage> = edits
+            .masks
+            .iter()
+            .filter(|mask| !mask.adjustments.is_neutral())
+            .map(|mask| LocalStage::new(mask, input.width, input.height, as_shot, &a.white_balance))
+            .collect();
+        let local_regional = locals.iter().any(LocalStage::needs_base_layer);
+        Self {
+            input,
+            m,
+            luma,
+            regional: RegionalExposure { shadows: a.shadows / 100.0, highlights: a.highlights / 100.0 },
+            global_regional,
+            base: (global_regional || local_regional).then(|| ToneBaseLayer::new(input, luma)),
+            locals,
+            curve: ToneLut::new(a, &edits.tone_curve),
+            hsl: HslMixer::new(&edits.hsl),
+            presence: Presence { saturation: a.saturation / 100.0, vibrance: a.vibrance / 100.0 },
+        }
+    }
 
-    // White balance and exposure combined into one matrix.
-    let wb = white_balance_matrix(as_shot, &a.white_balance);
-    let gain = a.exposure.exp2();
-    let m: [f32; 9] = wb.map(|v| v as f32 * gain);
-    let luma = [
-        (LUMA_R * f64::from(m[0]) + LUMA_G * f64::from(m[3]) + LUMA_B * f64::from(m[6])) as f32,
-        (LUMA_R * f64::from(m[1]) + LUMA_G * f64::from(m[4]) + LUMA_B * f64::from(m[7])) as f32,
-        (LUMA_R * f64::from(m[2]) + LUMA_G * f64::from(m[5]) + LUMA_B * f64::from(m[8])) as f32,
-    ];
+    fn scratch(&self) -> Vec<Vec<f32>> {
+        vec![vec![0.0; self.input.width]; self.locals.len()]
+    }
 
-    let regional = RegionalExposure { shadows: a.shadows / 100.0, highlights: a.highlights / 100.0 };
-    let global_regional = a.shadows != 0.0 || a.highlights != 0.0;
-
-    // Masks that change nothing are skipped.
-    let locals: Vec<LocalStage> = edits
-        .masks
-        .iter()
-        .filter(|mask| !mask.adjustments.is_neutral())
-        .map(|mask| LocalStage::new(mask, input.width, input.height, as_shot, &a.white_balance))
-        .collect();
-    let local_regional = locals.iter().any(LocalStage::needs_base_layer);
-
-    let base = (global_regional || local_regional).then(|| ToneBaseLayer::new(input, luma));
-
-    // Hue-preserving steps compose, so the basic tone and the RGB curve share one table.
-    let curve = ToneLut::new(a, &edits.tone_curve);
-    let hsl = HslMixer::new(&edits.hsl);
-    let presence = Presence { saturation: a.saturation / 100.0, vibrance: a.vibrance / 100.0 };
-
-    let bits = if options.bits_per_channel == 16 { 16 } else { 8 };
-    let mut output = EncodedImage::new(input.width, input.height, bits);
-    let w = input.width;
-
-    let process_row = |scratch: &mut Scratch, y: usize| {
-        let source_row = input.row(y);
-        for (local, coverage) in locals.iter().zip(&mut scratch.coverage) {
+    /// Develops pixels `x0..x1` of row `y` into `out` (display-linear RGB).
+    fn row(&self, coverage: &mut [Vec<f32>], y: usize, x0: usize, x1: usize, out: &mut [f32]) {
+        let m = &self.m;
+        let luma = &self.luma;
+        let source_row = self.input.row(y);
+        for (local, coverage) in self.locals.iter().zip(coverage.iter_mut()) {
             local.coverage.row(y, coverage);
         }
-        for x in 0..w {
+        for x in x0..x1 {
             let s = &source_row[x * 3..x * 3 + 3];
-            let p = &mut scratch.row[x * 3..x * 3 + 3];
+            let p = &mut out[(x - x0) * 3..(x - x0) * 3 + 3];
             p[0] = (m[0] * s[0] + m[1] * s[1] + m[2] * s[2]).max(0.0);
             p[1] = (m[3] * s[0] + m[4] * s[1] + m[5] * s[2]).max(0.0);
             p[2] = (m[6] * s[0] + m[7] * s[1] + m[8] * s[2]).max(0.0);
 
             let mut base_ev = 0.0;
-            if let Some(base) = &base {
+            if let Some(base) = &self.base {
                 let lum = luma[0] * s[0] + luma[1] * s[1] + luma[2] * s[2];
                 let log_y = lum.max(MIN_LUMINANCE).log2();
                 base_ev = base.at(x, y, log_y) - MIDDLE_GREY_LOG2;
             }
-            if global_regional {
-                let k = regional.ev(base_ev).exp2();
+            if self.global_regional {
+                let k = self.regional.ev(base_ev).exp2();
                 for c in p.iter_mut() {
                     *c *= k;
                 }
             }
-            for (local, coverage) in locals.iter().zip(&scratch.coverage) {
+            for (local, coverage) in self.locals.iter().zip(coverage.iter()) {
                 let cw = coverage[x];
                 if cw > 0.0 {
                     local.apply(p, cw, base_ev);
                 }
             }
 
-            curve.apply_hue_preserving(p);
-            if hsl.active() {
-                hsl.apply(p);
+            self.curve.apply_hue_preserving(p);
+            if self.hsl.active() {
+                self.hsl.apply(p);
             }
-            if presence.active() {
-                presence.apply(p);
+            if self.presence.active() {
+                self.presence.apply(p);
             }
         }
-    };
-    let new_scratch = || Scratch { row: vec![0.0; w * 3], coverage: vec![vec![0.0; w]; locals.len()] };
+    }
+}
 
+/// Writes display-linear rows (made by `row` with per-thread state from `init`) through the
+/// output colour transform.
+fn encode_rows<S>(
+    output: &mut EncodedImage,
+    init: impl Fn() -> S + Sync + Send,
+    row: impl Fn(&mut S, usize, &mut [f32]) + Sync,
+) {
+    let w = output.width;
+    let init = || (init(), vec![0.0f32; w * 3]);
     match &mut output.samples {
         Samples::Eight(data) => {
-            data.par_chunks_mut(w * 3).enumerate().for_each_init(new_scratch, |scratch, (y, out)| {
-                process_row(scratch, y);
-                to_srgb8(&scratch.row, out);
+            data.par_chunks_mut(w * 3).enumerate().for_each_init(init, |(state, buffer), (y, out)| {
+                row(state, y, buffer);
+                to_srgb8(buffer, out);
             })
         }
         Samples::Sixteen(data) => {
-            data.par_chunks_mut(w * 3).enumerate().for_each_init(new_scratch, |scratch, (y, out)| {
-                process_row(scratch, y);
-                to_srgb16(&scratch.row, out);
+            data.par_chunks_mut(w * 3).enumerate().for_each_init(init, |(state, buffer), (y, out)| {
+                row(state, y, buffer);
+                to_srgb16(buffer, out);
             })
         }
     }
+}
+
+/// Display-linear grey shown where a straightened photo leaves the frame empty (only
+/// visible while cropping; a fitted crop never shows it).
+const EMPTY: f32 = 0.006;
+
+/// Renders `source` with `edits`. `as_shot` is the white balance the source was decoded
+/// with.
+pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, options: &RenderOptions) -> EncodedImage {
+    let bits = if options.bits_per_channel == 16 { 16 } else { 8 };
+    let crop = &edits.crop;
+    let whole_frame = options.whole_frame;
+    let transformed =
+        crop.quarter_turns.rem_euclid(4) != 0 || crop.angle != 0.0 || (!whole_frame && crop.has_rectangle());
+    if !transformed {
+        // Resize first so every later stage runs at the output resolution.
+        let (width, height) = fit_size(source.width, source.height, options.max_long_edge);
+        let input = resized(source, width, height);
+        let develop = Develop::new(&input, as_shot, edits);
+        let mut output = EncodedImage::new(width, height, bits);
+        encode_rows(&mut output, || develop.scratch(), |coverage, y, out| develop.row(coverage, y, 0, width, out));
+        return output;
+    }
+
+    // Scale the photo so the cropped result fits max_long_edge, develop the part of it the
+    // crop needs (masks and local tone live in photo coordinates), then resample through
+    // the crop's rotation.
+    let long_edge = |g: &CropGeometry| g.width.max(g.height);
+    let mut scale = match options.max_long_edge {
+        0 => 1.0,
+        max => (max as f64 / long_edge(&crop.geometry(source.width, source.height, whole_frame)) as f64).min(1.0),
+    };
+    let (mut pw, mut ph, mut geometry);
+    loop {
+        (pw, ph) = if scale < 1.0 {
+            (
+                ((source.width as f64 * scale).round() as usize).max(1),
+                ((source.height as f64 * scale).round() as usize).max(1),
+            )
+        } else {
+            (source.width, source.height)
+        };
+        geometry = crop.geometry(pw, ph, whole_frame);
+        // Rounding can make the result a pixel too large; shrink a little and try again.
+        if options.max_long_edge == 0 || long_edge(&geometry) <= options.max_long_edge || scale < 1e-3 {
+            break;
+        }
+        scale *= options.max_long_edge as f64 / long_edge(&geometry) as f64 * 0.9995;
+    }
+    let input = resized(source, pw, ph);
+    let develop = Develop::new(&input, as_shot, edits);
+
+    // The photo pixels the result needs (with a pixel of margin for interpolation).
+    let to_photo = geometry.photo_to_result.inverted();
+    let (gw, gh) = (geometry.width as f64, geometry.height as f64);
+    let corners = [(0.0, 0.0), (gw, 0.0), (0.0, gh), (gw, gh)].map(|(x, y)| to_photo.map(x, y));
+    let span = |values: [f64; 4], limit: usize| {
+        let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        ((lo - 1.0).floor().clamp(0.0, limit as f64) as usize, (hi + 1.0).ceil().clamp(0.0, limit as f64) as usize)
+    };
+    let (x0, x1) = span(corners.map(|c| c.0), pw);
+    let (y0, y1) = span(corners.map(|c| c.1), ph);
+    let (bw, bh) = (x1 - x0, y1 - y0);
+
+    let mut developed = vec![0.0f32; bw * bh * 3];
+    if bw > 0 {
+        developed
+            .par_chunks_mut(bw * 3)
+            .enumerate()
+            .for_each_init(|| develop.scratch(), |coverage, (i, out)| develop.row(coverage, y0 + i, x0, x1, out));
+    }
+
+    let mut output = EncodedImage::new(geometry.width, geometry.height, bits);
+    let (pwf, phf) = (pw as f64, ph as f64);
+    encode_rows(
+        &mut output,
+        || (),
+        |_, oy, out| {
+            for (ox, p) in out.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                let (px, py) = to_photo.map(ox as f64 + 0.5, oy as f64 + 0.5);
+                if bw == 0 || bh == 0 || px < 0.0 || py < 0.0 || px > pwf || py > phf {
+                    p.fill(EMPTY);
+                    continue;
+                }
+                // Bilinear between the four nearest pixel centres.
+                let fx = (px - 0.5 - x0 as f64).clamp(0.0, (bw - 1) as f64);
+                let fy = (py - 0.5 - y0 as f64).clamp(0.0, (bh - 1) as f64);
+                let (ix, iy) = (fx as usize, fy as usize);
+                let (ix1, iy1) = ((ix + 1).min(bw - 1), (iy + 1).min(bh - 1));
+                let (tx, ty) = ((fx - ix as f64) as f32, (fy - iy as f64) as f32);
+                let at = |x: usize, y: usize, c: usize| developed[(y * bw + x) * 3 + c];
+                for (c, v) in p.iter_mut().enumerate() {
+                    let top = at(ix, iy, c) + (at(ix1, iy, c) - at(ix, iy, c)) * tx;
+                    let bottom = at(ix, iy1, c) + (at(ix1, iy1, c) - at(ix, iy1, c)) * tx;
+                    *v = top + (bottom - top) * ty;
+                }
+            }
+        },
+    );
     output
+}
+
+fn resized(source: &ImageF, width: usize, height: usize) -> Cow<'_, ImageF> {
+    if (width, height) != (source.width, source.height) {
+        Cow::Owned(resize_area(source, width, height))
+    } else {
+        Cow::Borrowed(source)
+    }
+}
+
+/// Puts a single-channel image of the photo (e.g. a mask's coverage) through the crop, as
+/// [`render`] does with the photo itself. Returns the result's width, height and values.
+pub fn crop_gray(
+    values: &[u8],
+    width: usize,
+    height: usize,
+    crop: &Crop,
+    whole_frame: bool,
+) -> (usize, usize, Vec<u8>) {
+    let transformed =
+        crop.quarter_turns.rem_euclid(4) != 0 || crop.angle != 0.0 || (!whole_frame && crop.has_rectangle());
+    if !transformed {
+        return (width, height, values.to_vec());
+    }
+    let geometry = crop.geometry(width, height, whole_frame);
+    let to_photo = geometry.photo_to_result.inverted();
+    let mut out = vec![0u8; geometry.width * geometry.height];
+    out.par_chunks_mut(geometry.width.max(1)).enumerate().for_each(|(oy, row)| {
+        for (ox, v) in row.iter_mut().enumerate() {
+            let (px, py) = to_photo.map(ox as f64 + 0.5, oy as f64 + 0.5);
+            if px >= 0.0 && py >= 0.0 && px < width as f64 && py < height as f64 {
+                *v = values[py as usize * width + px as usize];
+            }
+        }
+    });
+    (geometry.width, geometry.height, out)
 }

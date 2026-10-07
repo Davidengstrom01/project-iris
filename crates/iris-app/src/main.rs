@@ -4,6 +4,7 @@
 
 mod action;
 mod app;
+mod crop_tool;
 mod curve_editor;
 mod dialogs;
 mod document;
@@ -40,6 +41,10 @@ fn run(renderer: eframe::Renderer, open: Option<PathBuf>) -> eframe::Result {
 
 fn main() -> eframe::Result {
     let open = std::env::args_os().nth(1).map(PathBuf::from);
+    // The rendering threads get the same roomy stacks as the session's workers.
+    if let Err(e) = rayon::ThreadPoolBuilder::new().stack_size(session::WORKER_STACK).build_global() {
+        eprintln!("iris: cannot configure the rendering threads: {e}");
+    }
     // wgpu (Vulkan, or its OpenGL backend); plain OpenGL if that cannot start, so a
     // dedicated GPU is never required.
     match run(eframe::Renderer::Wgpu, open.clone()) {

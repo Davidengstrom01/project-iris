@@ -266,6 +266,41 @@ impl Crop {
         self.constrained(photo_width, photo_height)
     }
 
+    /// Moves the rectangle from `self` (which fits the photo) towards `target`, as far as
+    /// it can go while still fitting. Used while dragging, so a drag stops at the photo's
+    /// edge instead of jumping.
+    pub fn toward(self, target: Crop, photo_width: usize, photo_height: usize) -> Crop {
+        if target.fits_photo(photo_width, photo_height) {
+            return target;
+        }
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let at = |t: f32| Crop {
+            left: lerp(self.left, target.left, t),
+            top: lerp(self.top, target.top, t),
+            right: lerp(self.right, target.right, t),
+            bottom: lerp(self.bottom, target.bottom, t),
+            ..target
+        };
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..30 {
+            let mid = (lo + hi) / 2.0;
+            if at(mid).fits_photo(photo_width, photo_height) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(lo)
+    }
+
+    /// Width / height of the crop rectangle in pixels.
+    pub fn pixel_aspect(&self, photo_width: usize, photo_height: usize) -> f32 {
+        let (fw, fh) = frame_size(photo_width, photo_height, self.quarter_turns);
+        let w = (self.right - self.left) * fw as f32;
+        let h = (self.bottom - self.top) * fh as f32;
+        if h > 0.0 { w / h } else { 1.0 }
+    }
+
     /// Turns the photo by 90°; the crop rectangle turns with it.
     pub fn rotated_quarter(&self, clockwise: bool) -> Crop {
         let mut r = *self;
@@ -354,6 +389,20 @@ mod tests {
         assert!((back.left - wide.left).abs() < 1e-6 && (back.bottom - wide.bottom).abs() < 1e-6);
         assert!((back.aspect - 1.5).abs() < 1e-6);
         assert_eq!(wide.rotated_quarter(false).quarter_turns, 3);
+    }
+
+    #[test]
+    fn dragging_stops_at_the_photo_edge() {
+        let start = Crop { left: 0.2, top: 0.2, right: 0.6, bottom: 0.6, ..Default::default() };
+        // Moving 0.6 to the left would leave the frame; it stops at the edge.
+        let target = Crop { left: -0.4, right: 0.0, ..start };
+        let moved = start.toward(target, 600, 400);
+        assert!(moved.fits_photo(600, 400));
+        assert!(moved.left.abs() < 1e-3 && (moved.right - 0.4).abs() < 1e-3);
+        // A target that fits is taken as is.
+        let inside = Crop { left: 0.1, right: 0.5, ..start };
+        assert_eq!(start.toward(inside, 600, 400), inside);
+        assert!((inside.pixel_aspect(600, 400) - 1.5).abs() < 1e-5);
     }
 
     #[test]

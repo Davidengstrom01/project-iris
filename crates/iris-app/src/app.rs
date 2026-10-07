@@ -64,6 +64,8 @@ pub struct IrisApp {
     curve_histogram: Option<[f32; 256]>,
     export_enabled: bool,
     eyedropper: bool,
+    /// Cropping on the photo (the view shows the whole straightened frame).
+    cropping: bool,
     /// The selected mask is edited on the photo (None = normal viewing).
     selected_mask: Option<usize>,
     last_selected_mask: usize,
@@ -112,6 +114,7 @@ impl IrisApp {
             curve_histogram: None,
             export_enabled: false,
             eyedropper: false,
+            cropping: false,
             selected_mask: None,
             last_selected_mask: 0,
             mask_sync: false,
@@ -169,12 +172,13 @@ impl IrisApp {
                         );
                     }
                 }
-                SessionEvent::PreviewReady { image, full_size, histogram } => {
+                SessionEvent::PreviewReady { image, framing, histogram } => {
                     let first_preview = !self.export_enabled;
                     let texture = TiledTexture::upload(ctx, "preview", image, Magnify::Smooth);
-                    self.view.set_preview(texture, full_size);
+                    self.view.set_preview(texture, framing);
                     self.export_enabled = true;
-                    self.size_label = format!("{} × {}", full_size[0], full_size[1]);
+                    let [w, h] = framing.result_size;
+                    self.size_label = format!("{w} × {h}");
                     if first_preview {
                         self.clear_status();
                     }
@@ -233,6 +237,7 @@ impl IrisApp {
             return;
         }
         self.set_compare_mode(CompareMode::Off);
+        self.set_cropping(false);
         self.select_mask(None);
         self.document.clear();
         self.library.show_folder_of(&path);
@@ -401,6 +406,9 @@ impl IrisApp {
         }
         self.mask_panel.follow_selection(masks, self.selected_mask);
         self.mask_sync = true;
+        if self.cropping {
+            self.view.set_crop_tool(Some((self.document.edits().crop, self.photo_size())));
+        }
     }
 
     fn undo(&mut self) {
@@ -488,6 +496,7 @@ impl IrisApp {
         if !self.document.is_loaded() {
             return;
         }
+        self.set_cropping(false);
         let mut state = self.document.edits().clone();
         if state.masks.len() >= MAX_MASKS {
             self.show_status(format!("A photo can have at most {MAX_MASKS} masks."), Some(Duration::from_secs(4)));
@@ -514,6 +523,7 @@ impl IrisApp {
         if !self.document.is_loaded() {
             return;
         }
+        self.set_cropping(false);
         let count = self.document.edits().masks.len();
         if self.selected_mask.is_some() {
             self.select_mask(None);
@@ -522,6 +532,81 @@ impl IrisApp {
         } else {
             self.select_mask(Some(self.last_selected_mask.min(count - 1)));
         }
+    }
+
+    // --- Crop ------------------------------------------------------------------------
+
+    /// Full-resolution size of the photo before any crop.
+    fn photo_size(&self) -> [usize; 2] {
+        self.metadata.as_ref().map_or([0, 0], |m| [m.width, m.height])
+    }
+
+    fn set_cropping(&mut self, on: bool) {
+        let on = on && self.document.is_loaded() && self.session.is_loaded();
+        if on == self.cropping {
+            return;
+        }
+        self.cropping = on;
+        if on {
+            self.select_mask(None);
+            self.set_eyedropper(false);
+            self.view.set_crop_tool(Some((self.document.edits().crop, self.photo_size())));
+            self.show_status(
+                "Drag the corners or edges, or drag inside to move. Enter or double-click when done.",
+                None,
+            );
+        } else {
+            self.view.set_crop_tool(None);
+            if self.status.as_ref().is_some_and(|s| s.text.starts_with("Drag the corners")) {
+                self.clear_status();
+            }
+        }
+        self.session.set_whole_frame(on);
+    }
+
+    /// Records a new crop as one step (rotate, aspect, reset).
+    fn commit_crop(&mut self, crop: iris_core::Crop, label: &str) {
+        let mut state = self.document.edits().clone();
+        state.crop = crop;
+        self.commit(state, label);
+    }
+
+    fn set_crop_aspect(&mut self, aspect: crate::crop_tool::Aspect) {
+        let [w, h] = self.photo_size();
+        let crop = self.document.edits().crop;
+        let value = aspect.value(&crop, [w, h]);
+        let next = if value > 0.0 { crop.with_aspect(value, w, h) } else { iris_core::Crop { aspect: 0.0, ..crop } };
+        self.commit_crop(next, "Crop Aspect");
+    }
+
+    fn swap_crop_aspect(&mut self) {
+        let [w, h] = self.photo_size();
+        let crop = self.document.edits().crop;
+        let next = if crop.aspect > 0.0 {
+            crop.with_aspect(1.0 / crop.aspect, w, h)
+        } else {
+            // Free: turn the rectangle's own shape around.
+            iris_core::Crop { aspect: 0.0, ..crop.with_aspect(1.0 / crop.pixel_aspect(w, h), w, h) }
+        };
+        self.commit_crop(next, "Crop Aspect");
+    }
+
+    fn rotate_quarter(&mut self, clockwise: bool) {
+        let [w, h] = self.photo_size();
+        let crop = self.document.edits().crop.rotated_quarter(clockwise).constrained(w, h);
+        self.commit_crop(crop, if clockwise { "Rotate Right" } else { "Rotate Left" });
+    }
+
+    /// Straightening keeps the crop's shape and makes it as large as fits the rotated photo.
+    fn straighten(&mut self, angle: f32) {
+        let [w, h] = self.photo_size();
+        let crop = self.document.edits().crop;
+        let turned = iris_core::Crop { angle, ..crop };
+        let mut next = turned.with_aspect(crop.pixel_aspect(w, h), w, h);
+        next.aspect = crop.aspect;
+        let mut state = self.document.edits().clone();
+        state.crop = next;
+        self.edit_interactive(state, "Straighten");
     }
 
     /// Replaces the selected mask (a slider, brush stroke or handle drag).
@@ -646,8 +731,37 @@ impl IrisApp {
                     self.mask_sync = true;
                 }
             }
+            Action::ToggleCrop => self.set_cropping(!self.cropping),
+            Action::Confirm => self.set_cropping(false),
+            Action::SetCropAspect(aspect) => {
+                if loaded {
+                    self.set_crop_aspect(aspect);
+                }
+            }
+            Action::SwapCropAspect => {
+                if self.cropping {
+                    self.swap_crop_aspect();
+                }
+            }
+            Action::RotateQuarter(clockwise) => {
+                if self.session.is_loaded() {
+                    self.rotate_quarter(clockwise);
+                }
+            }
+            Action::Straighten(angle) => {
+                if self.session.is_loaded() {
+                    self.straighten(angle);
+                }
+            }
+            Action::ResetCrop => {
+                if loaded {
+                    self.commit_crop(iris_core::Crop::default(), "Reset Crop");
+                }
+            }
             Action::Escape => {
-                if self.view.is_picking() {
+                if self.cropping {
+                    self.set_cropping(false);
+                } else if self.view.is_picking() {
                     self.set_eyedropper(false); // Esc cancels the eyedropper first
                 } else {
                     self.select_mask(None);
@@ -677,6 +791,14 @@ impl IrisApp {
             ViewEvent::MaskGestureStarted => self.document.begin_gesture(),
             ViewEvent::MaskEdited { mask, label } => self.edit_selected_mask(mask, label),
             ViewEvent::MaskGestureFinished => self.document.end_gesture(),
+            ViewEvent::CropGestureStarted => self.document.begin_gesture(),
+            ViewEvent::CropEdited(crop) => {
+                let mut state = self.document.edits().clone();
+                state.crop = crop;
+                self.edit_interactive(state, "Crop");
+            }
+            ViewEvent::CropGestureFinished => self.document.end_gesture(),
+            ViewEvent::CropDone => self.set_cropping(false),
         }
     }
 
@@ -704,6 +826,8 @@ impl IrisApp {
                 (command(Key::Equals), Action::ZoomIn),
                 (command(Key::Minus), Action::ZoomOut),
                 (command(Key::Q), Action::Quit),
+                (command(Key::OpenBracket), Action::RotateQuarter(false)),
+                (command(Key::CloseBracket), Action::RotateQuarter(true)),
             ];
             for (shortcut, action) in with_modifiers {
                 if i.consume_shortcut(&shortcut) {
@@ -720,6 +844,9 @@ impl IrisApp {
                 (Key::M, Action::ToggleMasks),
                 (Key::O, Action::ToggleOverlay),
                 (Key::Escape, Action::Escape),
+                (Key::R, Action::ToggleCrop),
+                (Key::Enter, Action::Confirm),
+                (Key::X, Action::SwapCropAspect),
                 (Key::OpenBracket, Action::BrushSize(-1)),
                 (Key::CloseBracket, Action::BrushSize(1)),
                 (Key::Tab, Action::TogglePanels),
@@ -831,6 +958,7 @@ impl IrisApp {
                 Action::ToggleSplit,
             );
             ui.separator();
+            button(ui, "Crop", has_photo && loaded, self.cropping, "Crop and rotate (R)".into(), Action::ToggleCrop);
             button(ui, "Masks", loaded, self.selected_mask.is_some(), "Edit masks (M)".into(), Action::ToggleMasks);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 button(ui, "100%", has_photo, false, "View at 100% (2)".into(), Action::ActualSize);
@@ -847,6 +975,9 @@ impl IrisApp {
             let loaded = self.document.is_loaded();
             ui.add_enabled_ui(loaded, |ui| {
                 panels::presets(ui, &self.presets, actions);
+                widgets::separator(ui);
+                let crop = self.document.edits().crop;
+                panels::crop(ui, &crop, self.photo_size(), self.cropping, actions);
                 widgets::separator(ui);
                 let edits = self.document.edits().clone();
                 let as_shot = self.document.defaults().basic.white_balance;
@@ -1142,6 +1273,12 @@ impl IrisApp {
     }
     pub fn test_full_size(&self) -> [usize; 2] {
         self.metadata.as_ref().map_or([0, 0], |m| [m.width, m.height])
+    }
+    pub fn test_cropping(&self) -> bool {
+        self.cropping
+    }
+    pub fn test_size_label(&self) -> &str {
+        &self.size_label
     }
     pub fn test_path(&self) -> PathBuf {
         self.session.path().map(Path::to_owned).unwrap_or_default()

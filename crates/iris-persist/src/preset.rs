@@ -154,6 +154,7 @@ mod tests {
         state.basic.shadows = 30.0;
         state.basic.white_balance = WhiteBalance { temperature: 4800.0, tint: -3.0 };
         state.masks = vec![Mask::new(MaskType::Radial, &[])];
+        state.crop = iris_core::Crop { quarter_turns: 1, left: 0.1, ..Default::default() };
 
         let preset = Preset {
             name: "Punchy".into(),
@@ -167,7 +168,9 @@ mod tests {
         assert_eq!(applied.basic.shadows, 30.0);
         assert_eq!(applied.basic.white_balance, state.basic.white_balance);
         assert_eq!(applied.applied_preset, "Punchy");
-        assert_eq!(applied.masks, state.masks); // masks are photo-specific
+        assert_eq!(applied.masks, state.masks); // masks and crop are photo-specific
+        assert_eq!(applied.crop, state.crop);
+        assert!(preset.to_json().get("crop").is_none());
     }
 
     #[test]

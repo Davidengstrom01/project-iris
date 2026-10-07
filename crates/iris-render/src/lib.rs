@@ -12,7 +12,7 @@ pub mod white_balance;
 
 pub use histogram::Histogram;
 pub use mask_coverage::{MaskCoverage, render_mask_coverage};
-pub use pipeline::{RenderOptions, render};
+pub use pipeline::{RenderOptions, crop_gray, render};
 pub use resample::{downscale_to_fit, fit_size, resize_area};
 pub use white_balance::{estimate_white_balance, sample_white_balance};
 
@@ -320,5 +320,122 @@ pub(crate) mod tests {
 
         assert!(pixel_with(0.01, 0.01, 0.01, &with_local("shadows", 100.0))[0] > pixel(0.01, 0.01, 0.01)[0] + 15);
         assert!(pixel_with(0.7, 0.7, 0.7, &with_local("highlights", -100.0))[0] < pixel(0.7, 0.7, 0.7)[0] - 15);
+    }
+
+    // --- Crop and rotation ------------------------------------------------------
+
+    /// A gradient so every pixel differs: red increases left to right, green top to bottom.
+    fn gradient(w: usize, h: usize) -> ImageF {
+        let mut image = ImageF::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let p = &mut image.row_mut(y)[x * 3..x * 3 + 3];
+                p.copy_from_slice(&[0.05 + 0.6 * x as f32 / w as f32, 0.05 + 0.6 * y as f32 / h as f32, 0.2]);
+            }
+        }
+        image
+    }
+
+    fn px(image: &iris_core::EncodedImage, x: usize, y: usize) -> [u8; 3] {
+        let d = image.data8();
+        let i = (y * image.width + x) * 3;
+        [d[i], d[i + 1], d[i + 2]]
+    }
+
+    fn cropped(crop: iris_core::Crop) -> EditState {
+        EditState { crop, ..neutral() }
+    }
+
+    #[test]
+    fn crop_rectangle_is_an_exact_cut_out() {
+        let source = gradient(40, 20);
+        let full = render(&source, &AS_SHOT, &neutral(), &RenderOptions::default());
+        let crop = iris_core::Crop { left: 0.25, top: 0.5, right: 0.75, bottom: 1.0, ..Default::default() };
+        let out = render(&source, &AS_SHOT, &cropped(crop), &RenderOptions::default());
+        assert_eq!((out.width, out.height), (20, 10));
+        for y in 0..10 {
+            for x in 0..20 {
+                assert_eq!(px(&out, x, y), px(&full, x + 10, y + 10));
+            }
+        }
+        // While cropping, the whole frame is shown.
+        let whole =
+            render(&source, &AS_SHOT, &cropped(crop), &RenderOptions { whole_frame: true, ..Default::default() });
+        assert_eq!(whole, full);
+    }
+
+    #[test]
+    fn quarter_turns_rotate_the_result() {
+        let source = gradient(40, 20);
+        let full = render(&source, &AS_SHOT, &neutral(), &RenderOptions::default());
+        let turned = |turns| {
+            render(
+                &source,
+                &AS_SHOT,
+                &cropped(iris_core::Crop { quarter_turns: turns, ..Default::default() }),
+                &Default::default(),
+            )
+        };
+        let cw = turned(1);
+        assert_eq!((cw.width, cw.height), (20, 40));
+        assert_eq!(px(&cw, 0, 0), px(&full, 0, 19)); // bottom-left comes to the top-left
+        assert_eq!(px(&cw, 19, 39), px(&full, 39, 0));
+        let half = turned(2);
+        assert_eq!(px(&half, 0, 0), px(&full, 39, 19));
+        let ccw = turned(3);
+        assert_eq!(px(&ccw, 0, 0), px(&full, 39, 0));
+    }
+
+    #[test]
+    fn straightening_fills_the_frame_once_fitted() {
+        let source = solid(300, 200, 0.4, 0.4, 0.4);
+        let straight = iris_core::Crop { angle: 8.0, ..Default::default() };
+        let is_empty = |p: [u8; 3]| p[0] < 30;
+        // Unfitted, the corners are empty (as shown while cropping) ...
+        let whole =
+            render(&source, &AS_SHOT, &cropped(straight), &RenderOptions { whole_frame: true, ..Default::default() });
+        assert!(is_empty(px(&whole, 0, 0)));
+        assert!(!is_empty(px(&whole, 150, 100)));
+        // ... and the fitted crop has none.
+        let fitted = straight.constrained(300, 200);
+        let out = render(&source, &AS_SHOT, &cropped(fitted), &Default::default());
+        assert!(out.width < 300 && out.height < 200);
+        for (x, y) in [(0, 0), (out.width - 1, 0), (0, out.height - 1), (out.width - 1, out.height - 1)] {
+            assert!(!is_empty(px(&out, x, y)), "empty corner at {x},{y}");
+        }
+    }
+
+    #[test]
+    fn long_edge_applies_to_the_cropped_result() {
+        let source = gradient(400, 200);
+        let crop = iris_core::Crop { right: 0.5, ..Default::default() }; // 200 x 200
+        for angle in [0.0, 3.0] {
+            let crop = iris_core::Crop { angle, ..crop }.constrained(400, 200);
+            let out =
+                render(&source, &AS_SHOT, &cropped(crop), &RenderOptions { max_long_edge: 100, ..Default::default() });
+            assert_eq!(out.width.max(out.height), 100, "angle {angle}");
+        }
+    }
+
+    #[test]
+    fn masks_stay_on_the_photo_under_a_crop() {
+        // A mask over the left half brightens it; cropping to the right half shows no change,
+        // cropping to the left half shows it everywhere.
+        let grey = solid(100, 20, 0.1, 0.1, 0.1);
+        let mut edits = neutral();
+        let mut mask = Mask::new(MaskType::Linear, &[]);
+        mask.linear = LinearGradient { x: 0.5, y: 0.5, angle: 90.0, feather: 0.02 };
+        mask.adjustments.exposure = 1.0;
+        edits.masks = vec![mask];
+        let plain = pixel(0.1, 0.1, 0.1);
+        let bright = pixel(0.2, 0.2, 0.2);
+        edits.crop = iris_core::Crop { left: 0.6, ..Default::default() };
+        let right = render(&grey, &AS_SHOT, &edits, &Default::default());
+        assert!((i32::from(px(&right, 5, 10)[0]) - plain[0]).abs() <= 1);
+        // After a clockwise turn the photo's left side is the top of the frame.
+        edits.crop = iris_core::Crop { bottom: 0.4, quarter_turns: 1, ..Default::default() };
+        let left = render(&grey, &AS_SHOT, &edits, &Default::default());
+        assert_eq!((left.width, left.height), (20, 40));
+        assert!((i32::from(px(&left, 10, 5)[0]) - bright[0]).abs() <= 1);
     }
 }

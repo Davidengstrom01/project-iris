@@ -32,6 +32,18 @@ pub enum Action {
     /// The mask tool, brush or overlay changed.
     MaskToolChanged,
 
+    // Crop and rotation.
+    /// Start or finish cropping on the photo.
+    ToggleCrop,
+    SetCropAspect(crate::crop_tool::Aspect),
+    /// Portrait <-> landscape.
+    SwapCropAspect,
+    /// Turn by 90°: clockwise when true.
+    RotateQuarter(bool),
+    /// The straighten slider moved (degrees).
+    Straighten(f32),
+    ResetCrop,
+
     // Presets.
     ApplyPreset(Preset),
     ShowSavePreset,
@@ -57,6 +69,8 @@ pub enum Action {
     ToggleMasks,
     ToggleOverlay,
     Escape,
+    /// Enter: finish cropping.
+    Confirm,
     BrushSize(i32),
     TogglePanels,
     Quit,

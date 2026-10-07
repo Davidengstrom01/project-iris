@@ -16,7 +16,7 @@ Original RAW files are only ever opened read-only.
 | 4 — Tone curve | Histogram, RGB point curve, S / inverse-S presets | ✅ done |
 | 5 — HSL | Hue / saturation / luminance for eight colour ranges | ✅ done |
 | 6 — Masking | Brush, linear and radial masks; overlay; per-mask adjustments; invert; add/subtract/erase | ✅ done |
-| 7 — Crop & polish | | next |
+| 7 — Crop & polish | Crop with aspect ratios, 90° rotation, straightening; crop shortcuts | ✅ crop done, polish ongoing |
 | 8 — Packaging | AppImage, `.deb` | |
 
 ## Building
@@ -37,6 +37,8 @@ cargo build --release
 cargo test --workspace
 # Tests that need a real RAW file (decoding, the photo session, the headless UI workflow):
 IRIS_TEST_RAW=/path/to/photo.ARW cargo test --workspace
+# Screenshots of the UI, rendered headlessly:
+IRIS_TEST_RAW=/path/to/photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -75,6 +77,10 @@ The golden test compares renders with reference images from the C++ version; see
 | Drag | Pan |
 | Double-click | Toggle fit / 100% at the cursor |
 | Double-click a slider name | Reset that slider |
+| R | Crop and rotate (shows the whole photo with the crop rectangle) |
+| Enter / Esc / double-click inside | Finish cropping |
+| X | Swap the crop between portrait and landscape |
+| Ctrl+[ / Ctrl+] | Rotate 90° left / right |
 | M | Edit masks (creates a brush mask if there are none) |
 | Esc | Stop editing masks / cancel the white-balance eyedropper |
 | O | Show/hide the mask overlay |
@@ -123,6 +129,7 @@ source (linear Rec.2020, as-shot WB)
   -> RGB tone curve                  monotone spline, hue-preserving (same lookup table)
   -> HSL                             per colour range, in Oklab
   -> vibrance / saturation
+  -> crop / rotation / straighten    resampled; only the part of the photo the crop needs is developed
   -> sRGB output transform           LittleCMS
 ```
 
@@ -156,7 +163,7 @@ photo.ARW
 photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
                      "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]},
                      "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}},
-                     "masks": [...]}
+                     "masks": [...], "crop": {...}}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name
@@ -188,6 +195,24 @@ are never part of presets.
 "masks": [{"type": "radial", "name": "Radial 1", "invert": true,
            "radial": {"x": 0.5, "y": 0.45, "width": 0.6, "height": 0.4, "rotation": 0, "feather": 0.5},
            "strokes": [], "adjustments": {"exposure": -0.6}}]
+```
+
+### Crop and rotation
+
+Press **R** (or *Crop* in the toolbar or the Crop & Rotate panel) to crop: the whole photo is
+shown with the crop rectangle over it. Drag a corner or an edge to resize it and drag inside
+to move it; it never leaves the photo. *Aspect* locks the shape (Original, 1:1, 5:4, 4:3, 3:2,
+7:5, 16:9, or Free); **X** swaps portrait and landscape. *Rotate* turns the photo by 90°
+(**Ctrl+[** / **Ctrl+]**), and *Straighten* tilts it by up to ±45°: the crop keeps its shape and
+becomes the largest that still fits the tilted photo, so no empty corners are exported.
+Each drag, rotation and aspect change is one undo step; *Reset* removes the crop.
+
+The crop is applied last, after all tonal and colour edits, and masks stay attached to the
+photo underneath it. Exports and the long-edge setting apply to the cropped result. Crops
+are saved in the sidecar (never in presets):
+
+```json
+"crop": {"quarterTurns": 1, "angle": -2.5, "left": 0.1, "top": 0, "right": 0.9, "bottom": 1, "aspect": 1.5}
 ```
 
 ### Presets

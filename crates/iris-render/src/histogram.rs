@@ -25,7 +25,7 @@ impl Histogram {
         self.luminance[(54 * r + 183 * g + 19 * b) >> 8] += 1; // Rec.709 luma weights
     }
 
-    fn merge(mut self, other: Histogram) -> Histogram {
+    fn merge(mut self, other: &Histogram) -> Histogram {
         for k in 0..256 {
             self.red[k] += other.red[k];
             self.green[k] += other.green[k];
@@ -36,27 +36,32 @@ impl Histogram {
     }
 
     pub fn compute(image: &EncodedImage) -> Histogram {
-        const CHUNK: usize = 3 * 4096;
-        let mut total = match &image.samples {
+        const CHUNK: usize = 3 * 65536;
+        // One histogram per chunk, on the heap: folding 4 KB values through rayon's
+        // work-stealing recursion can overflow a worker's stack.
+        let parts: Vec<Box<Histogram>> = match &image.samples {
             Samples::Eight(d) => d
                 .par_chunks(CHUNK)
-                .fold(Histogram::default, |mut h, chunk| {
+                .map(|chunk| {
+                    let mut h = Box::<Histogram>::default();
                     for px in chunk.as_chunks::<3>().0 {
                         h.add(px[0].into(), px[1].into(), px[2].into());
                     }
                     h
                 })
-                .reduce(Histogram::default, Histogram::merge),
+                .collect(),
             Samples::Sixteen(d) => d
                 .par_chunks(CHUNK)
-                .fold(Histogram::default, |mut h, chunk| {
+                .map(|chunk| {
+                    let mut h = Box::<Histogram>::default();
                     for px in chunk.as_chunks::<3>().0 {
                         h.add(usize::from(px[0] >> 8), usize::from(px[1] >> 8), usize::from(px[2] >> 8));
                     }
                     h
                 })
-                .reduce(Histogram::default, Histogram::merge),
+                .collect(),
         };
+        let mut total = parts.into_iter().fold(Histogram::default(), |total, part| total.merge(&part));
         total.pixels = (image.width * image.height) as u64;
         total
     }
@@ -77,5 +82,18 @@ mod tests {
         assert_eq!(h.red[100], 7);
         assert_eq!(h.red[255], 1);
         assert_eq!(h.luminance[100], 7);
+    }
+
+    #[test]
+    fn large_images_are_counted_in_chunks() {
+        let (w, hh) = (500, 300); // more than one chunk
+        let mut data = vec![0u16; w * hh * 3];
+        for (i, v) in data.iter_mut().enumerate() {
+            *v = ((i / 3) % 256 * 257) as u16;
+        }
+        let h = Histogram::compute(&EncodedImage { width: w, height: hh, samples: Samples::Sixteen(data) });
+        assert_eq!(h.pixels, (w * hh) as u64);
+        assert_eq!(h.red.iter().map(|&c| u64::from(c)).sum::<u64>(), (w * hh) as u64);
+        assert!(h.red.iter().all(|&c| c > 0));
     }
 }
