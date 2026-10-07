@@ -511,6 +511,30 @@ fn ui_retouch() {
     assert_eq!(h.state().test_edits().retouch, saved);
 }
 
+#[test]
+fn ui_arrow_keys_step_through_photos() {
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    let is = |app: &IrisApp, p: &Path| app.test_loaded() && app.test_path() == p;
+
+    // → opens the next photo, F marks it, ← goes back; the ends stop.
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    wait_until(&mut h, "photo b", |app| is(app, &f.photo_b));
+    press(&mut h, Modifiers::NONE, Key::F);
+    assert!(iris_persist::is_favorite(&f.photo_b));
+    press(&mut h, Modifiers::NONE, Key::ArrowDown); // the last photo: stays
+    assert_eq!(h.state().test_path(), f.photo_b);
+    press(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    wait_until(&mut h, "photo a", |app| is(app, &f.photo_a));
+    assert!(!iris_persist::is_favorite(&f.photo_a));
+
+    // With the favorites filter, the arrows only visit favorites.
+    click(&mut h, "Favorites");
+    press(&mut h, Modifiers::NONE, Key::ArrowUp); // a is filtered out: goes to the last favorite
+    wait_until(&mut h, "photo b again", |app| is(app, &f.photo_b));
+}
+
 /// Screenshots of the main states, for looking at the UI without a display:
 ///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 #[test]

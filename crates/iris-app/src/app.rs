@@ -997,6 +997,14 @@ impl IrisApp {
                 }
             }
             Action::TogglePanels => self.panels_visible = !self.panels_visible,
+            Action::StepPhoto(step) => {
+                // Unsaved edits are asked about as for any other photo change.
+                if self.dialog.is_none()
+                    && let Some(next) = self.library.neighbour(self.session.path(), step)
+                {
+                    self.open_photo(&next);
+                }
+            }
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
         }
     }
@@ -1100,6 +1108,10 @@ impl IrisApp {
                 (Key::OpenBracket, Action::BrushSize(-1)),
                 (Key::CloseBracket, Action::BrushSize(1)),
                 (Key::Tab, Action::TogglePanels),
+                (Key::ArrowLeft, Action::StepPhoto(-1)),
+                (Key::ArrowUp, Action::StepPhoto(-1)),
+                (Key::ArrowRight, Action::StepPhoto(1)),
+                (Key::ArrowDown, Action::StepPhoto(1)),
             ];
             for (key, action) in plain {
                 if i.consume_key(Modifiers::NONE, key) {

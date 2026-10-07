@@ -1000,6 +1000,20 @@ impl Library {
         self.photos.iter().filter(|p| p.favorite).map(|p| p.path.clone()).collect()
     }
 
+    /// The photo `step` places before (negative) or after `current` in the list as shown
+    /// (only favorites while they are filtered). Stops at the ends.
+    pub fn neighbour(&self, current: Option<&Path>, step: isize) -> Option<PathBuf> {
+        let shown: Vec<&Photo> = self.photos.iter().filter(|p| !self.favorites_only || p.favorite).collect();
+        let index = match current.and_then(|c| shown.iter().position(|p| p.path == c)) {
+            Some(i) => i as isize + step,
+            // Not in the list (e.g. filtered out): start from the first or the last.
+            None if step > 0 => 0,
+            None => shown.len() as isize - 1,
+        };
+        let index = index.clamp(0, shown.len() as isize - 1);
+        shown.get(usize::try_from(index).ok()?).map(|p| p.path.clone()).filter(|p| Some(p.as_path()) != current)
+    }
+
     /// The favorites' count and actions, shown at the bottom of the left panel.
     pub fn footer(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let favorites = self.photos.iter().filter(|p| p.favorite).count();

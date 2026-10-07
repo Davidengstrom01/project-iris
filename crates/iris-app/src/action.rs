@@ -96,5 +96,7 @@ pub enum Action {
     Confirm,
     BrushSize(i32),
     TogglePanels,
+    /// Arrow keys: the previous (-1) or next (+1) photo in the library.
+    StepPhoto(isize),
     Quit,
 }

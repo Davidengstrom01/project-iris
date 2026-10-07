@@ -110,6 +110,7 @@ The golden test compares renders with reference images from the C++ version; see
 | Enter / Esc / double-click inside | Finish cropping |
 | X | Swap the crop between portrait and landscape |
 | Ctrl+[ / Ctrl+] | Rotate 90° left / right |
+| ← / → (↑ / ↓) | Previous / next photo in the library (only favorites while filtered) |
 | F | Mark / unmark the open photo as a favorite |
 | M | Edit masks (creates a brush mask if there are none) |
 | B | Paint on the selected mask (or a new brush mask) |
