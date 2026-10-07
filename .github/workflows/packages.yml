@@ -1,0 +1,28 @@
+name: Packages
+
+# Builds the .deb and the AppImage. Pushing a tag such as v0.1.0 also publishes them as a
+# GitHub release; they can be built by hand from the Actions tab too.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build packages
+        run: packaging/build-packages.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-iris-linux
+          path: dist/*
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

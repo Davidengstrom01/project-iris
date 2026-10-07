@@ -17,7 +17,25 @@ Original RAW files are only ever opened read-only.
 | 5 — HSL | Hue / saturation / luminance for eight colour ranges | ✅ done |
 | 6 — Masking | Brush, linear and radial masks; overlay; per-mask adjustments; invert; add/subtract/erase | ✅ done |
 | 7 — Crop & polish | Crop with aspect ratios, 90° rotation, straightening; crop shortcuts | ✅ crop done, polish ongoing |
-| 8 — Packaging | AppImage, `.deb` | |
+| 8 — Packaging | AppImage, `.deb`, Arch PKGBUILD, desktop entry and icon | ✅ done |
+
+## Installing
+
+- **Debian / Ubuntu** (22.04 or newer, Debian 12 or newer): `sudo apt install ./project-iris_<version>_amd64.deb`
+- **Any distribution**: `chmod +x project-iris-<version>-x86_64.AppImage` and run it.
+- **Arch Linux**: `cd packaging/arch && makepkg -si` (builds the latest commit).
+
+The `.deb` and the AppImage come from [GitHub releases](https://github.com/Davidengstrom01/project-iris/releases)
+(push a `v*` tag to make one) or can be built locally, which needs Docker:
+
+```sh
+packaging/build-packages.sh     # -> dist/project-iris_<version>_amd64.deb, dist/project-iris-<version>-x86_64.AppImage
+```
+
+They are built on Ubuntu 22.04 with LibRaw compiled from source and linked statically, so
+they only need libc, libstdc++, OpenMP, LittleCMS and zlib from the system (and its graphics
+drivers). Either installs the `iris` editor, the `iris-cli` renderer, a desktop entry that
+opens RAW files, and an icon.
 
 ## Building
 

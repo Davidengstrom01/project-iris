@@ -1,0 +1,50 @@
+# Builds Project Iris from the latest commit on GitHub:
+#   cd packaging/arch && makepkg -si
+pkgname=project-iris-git
+pkgver=r0
+pkgrel=1
+pkgdesc="Lightweight, non-destructive RAW photo editor"
+arch=('x86_64')
+url="https://github.com/Davidengstrom01/project-iris"
+license=('LicenseRef-unknown')
+depends=('libraw' 'lcms2' 'gcc-libs' 'glibc' 'libxkbcommon' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'clang')
+optdepends=('vulkan-icd-loader: GPU drawing through Vulkan (OpenGL is used otherwise)'
+            'xdg-desktop-portal: open and save dialogs')
+provides=('project-iris')
+conflicts=('project-iris')
+options=('!lto')
+source=("project-iris::git+${url}.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd project-iris
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd project-iris
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd project-iris
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p iris-app -p iris-cli
+}
+
+check() {
+    cd project-iris
+    export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+    cargo test --frozen --release --workspace
+}
+
+package() {
+    cd project-iris
+    install -Dm755 target/release/iris target/release/iris-cli -t "$pkgdir/usr/bin/"
+    install -Dm644 packaging/project-iris.desktop -t "$pkgdir/usr/share/applications/"
+    install -Dm644 packaging/project-iris.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps/"
+    install -Dm644 packaging/project-iris.png -t "$pkgdir/usr/share/icons/hicolor/256x256/apps/"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/project-iris/"
+}

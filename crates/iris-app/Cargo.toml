@@ -25,3 +25,27 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tempfile.workspace = true
 egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# `cargo deb -p iris-app` (see packaging/build-packages.sh, which builds on Ubuntu 22.04
+# with LibRaw linked statically).
+[package.metadata.deb]
+name = "project-iris"
+maintainer = "David Engström <davveengstrom01@gmail.com>"
+copyright = "2026, David Engström"
+section = "graphics"
+priority = "optional"
+extended-description = """\
+A lightweight, non-destructive RAW photo editor: exposure, white balance, tone curve, \
+HSL colour, presets, brush/linear/radial masks, crop and rotation, before/after and \
+JPEG/PNG/TIFF export. Edits are kept in .iris.json sidecars next to the photos; the RAW \
+files are never modified."""
+depends = "$auto"
+recommends = "libvulkan1 | libegl1, libxkbcommon0, libwayland-client0 | libx11-6, libxkbcommon-x11-0, libxcursor1, libxi6, libxrandr2, xdg-desktop-portal"
+assets = [
+    ["target/release/iris", "usr/bin/", "755"],
+    ["target/release/iris-cli", "usr/bin/", "755"],
+    ["../../packaging/project-iris.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/project-iris.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/project-iris.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../README.md", "usr/share/doc/project-iris/", "644"],
+]

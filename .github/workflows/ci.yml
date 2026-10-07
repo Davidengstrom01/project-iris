@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LibRaw, LittleCMS and libclang
+        run: sudo apt-get update && sudo apt-get install -y libraw-dev liblcms2-dev libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Tests that need a RAW file (IRIS_TEST_RAW) are skipped here.
+      - run: cargo test --workspace --locked

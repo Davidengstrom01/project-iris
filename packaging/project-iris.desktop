@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Project Iris
+GenericName=RAW Photo Editor
+Comment=Develop RAW photos: exposure, curves, colour, masks, crop and export
+Exec=iris %f
+Icon=project-iris
+Terminal=false
+Categories=Graphics;2DGraphics;Photography;RasterGraphics;
+Keywords=raw;photo;editor;develop;lightroom;
+StartupWMClass=project-iris
+MimeType=image/x-sony-arw;image/x-sony-sr2;image/x-sony-srf;image/x-canon-cr2;image/x-canon-cr3;image/x-canon-crw;image/x-nikon-nef;image/x-nikon-nrw;image/x-fuji-raf;image/x-adobe-dng;image/x-olympus-orf;image/x-panasonic-rw2;image/x-panasonic-raw2;image/x-pentax-pef;image/x-samsung-srw;image/x-hasselblad-3fr;image/x-kodak-kdc;image/x-leaf-mos;image/x-epson-erf;image/x-leica-rwl;image/x-phaseone-iiq;

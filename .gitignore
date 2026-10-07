@@ -12,3 +12,6 @@ compile_commands.json
 # Golden reference renders of a private photo (see tests/golden/README.md)
 /tests/golden/*.png
 /tests/golden/*.tif
+
+# Built packages (packaging/build-packages.sh)
+/dist/

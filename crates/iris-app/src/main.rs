@@ -28,7 +28,11 @@ fn options(renderer: eframe::Renderer) -> eframe::NativeOptions {
             .with_app_id("project-iris")
             .with_inner_size([1500.0, 950.0])
             .with_min_inner_size([800.0, 500.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/project-iris.png"))
+                    .unwrap_or_default(),
+            ),
         renderer,
         persist_window: true,
         ..Default::default()
