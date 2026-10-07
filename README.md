@@ -100,6 +100,7 @@ The golden test compares renders with reference images from the C++ version; see
 | Enter / Esc / double-click inside | Finish cropping |
 | X | Swap the crop between portrait and landscape |
 | Ctrl+[ / Ctrl+] | Rotate 90° left / right |
+| F | Mark / unmark the open photo as a favorite |
 | M | Edit masks (creates a brush mask if there are none) |
 | Esc | Stop editing masks / cancel the white-balance eyedropper |
 | O | Show/hide the mask overlay |
@@ -216,6 +217,22 @@ are never part of presets.
            "radial": {"x": 0.5, "y": 0.45, "width": 0.6, "height": 0.4, "rotation": 0, "feather": 0.5},
            "strokes": [], "adjustments": {"exposure": -0.6}}]
 ```
+
+### Favorites
+
+Mark the photos you want to keep with the star in the library (or **F** for the open
+photo). *Favorites* in the library's header shows only them, and the bottom of the library
+offers:
+
+- **Export…**: exports all favorites into a folder (by default `Export` next to them), with
+  the same options as a single export. Each photo uses its saved edits; the open photo is
+  exported as it is on screen. Progress shows in the status bar.
+- **Move…**: moves the favorites, together with their edits, to another folder. Nothing
+  is overwritten: a photo whose name is taken there stays where it is and is reported.
+
+The flag is stored in the photo's sidecar (`"favorite": true`), so it moves with the photo.
+A favorite without edits gets a sidecar holding just the flag, which is removed again when
+the star is cleared.
 
 ### Detail
 

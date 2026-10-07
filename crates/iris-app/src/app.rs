@@ -20,7 +20,7 @@ use crate::dialogs::{
 use crate::document::EditDocument;
 use crate::mask_editor::Tool;
 use crate::panels::{self, HslProperty, Library, MaskPanel};
-use crate::session::{PhotoSession, SessionEvent, Update};
+use crate::session::{BatchJob, PhotoSession, SessionEvent, Update};
 use crate::settings::{STORAGE_KEY, Settings};
 use crate::texture::{Magnify, TiledTexture};
 use crate::theme;
@@ -41,6 +41,8 @@ enum FileRequest {
     OpenPhoto,
     SaveEditsAs,
     ExportTo,
+    /// The folder to move the favorites to.
+    MoveFavoritesTo,
 }
 
 /// A file dialog's answer: what it was for and the chosen path, if any.
@@ -206,6 +208,20 @@ impl IrisApp {
                     self.export_enabled = false;
                     self.show_status(format!("Cannot open {name}"), Some(Duration::from_secs(8)));
                 }
+                SessionEvent::BatchProgress { done, total } => {
+                    self.show_status(format!("Exporting favorites {done} of {total}…"), None);
+                }
+                SessionEvent::BatchFinished { folder, exported, failed } => {
+                    let noun = if exported == 1 { "photo" } else { "photos" };
+                    self.show_status(
+                        format!("Exported {exported} {noun} to {}", folder.display()),
+                        Some(Duration::from_secs(8)),
+                    );
+                    if !failed.is_empty() {
+                        let list: Vec<String> = failed.iter().map(|(name, e)| format!("{name}: {e}")).collect();
+                        self.message("Export failed", format!("These photos were not exported:\n{}", list.join("\n")));
+                    }
+                }
                 SessionEvent::ExportFinished { path, error } => match error {
                     None => self.show_status(format!("Exported {}", path.display()), Some(Duration::from_secs(8))),
                     Some(error) => {
@@ -264,10 +280,89 @@ impl IrisApp {
                 }
                 self.open_photo(&path);
             }
+            AfterSave::MoveFavorites(folder) => {
+                // The edits were saved or discarded; move without asking again.
+                self.document.clear();
+                self.move_favorites_to(&folder);
+            }
             AfterSave::Quit => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
+        }
+    }
+
+    // --- Favorites -------------------------------------------------------------------
+
+    fn toggle_favorite(&mut self, path: &Path) {
+        let favorite = !self.library.is_favorite(path);
+        match iris_persist::set_favorite(path, favorite) {
+            Ok(()) => {
+                self.library.set_favorite(path, favorite);
+                let name = Self::file_name(path);
+                let text = if favorite {
+                    format!("Added {name} to favorites")
+                } else {
+                    format!("Removed {name} from favorites")
+                };
+                self.show_status(text, Some(Duration::from_secs(3)));
+            }
+            Err(e) => self.message("Favorites", format!("Cannot mark {}:\n{e}", Self::file_name(path))),
+        }
+    }
+
+    fn export_favorites(&mut self) {
+        let favorites = self.library.favorites();
+        if favorites.is_empty() {
+            self.show_status("No favorites in this folder.", Some(Duration::from_secs(4)));
+            return;
+        }
+        self.dialog = Some(Dialog::Export(ExportDialog::new_batch(favorites, &self.settings)));
+    }
+
+    /// Moves the favorites (with their sidecars) into `folder`. The open photo follows if it
+    /// is one of them; unsaved edits are asked about first.
+    fn move_favorites_to(&mut self, folder: &Path) {
+        let favorites = self.library.favorites();
+        if favorites.is_empty() {
+            return;
+        }
+        let same = |a: &Path, b: &Path| std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok();
+        if self.library.folder().is_some_and(|f| same(f, folder)) {
+            self.show_status("The favorites are already in that folder.", Some(Duration::from_secs(4)));
+            return;
+        }
+        let current = self.session.path().map(Path::to_owned);
+        let moving_current = current.as_ref().is_some_and(|c| favorites.contains(c));
+        if moving_current && self.document.is_dirty() {
+            self.dialog = Some(Dialog::Unsaved { then: AfterSave::MoveFavorites(folder.to_owned()) });
+            return;
+        }
+
+        let mut moved = 0;
+        let mut failed = Vec::new();
+        let mut current_moved_to = None;
+        for photo in &favorites {
+            match iris_persist::move_photo(photo, folder) {
+                Ok(target) => {
+                    moved += 1;
+                    if Some(photo) == current.as_ref() {
+                        current_moved_to = Some(target);
+                    }
+                }
+                Err(e) => failed.push(format!("{}: {e}", Self::file_name(photo))),
+            }
+        }
+        self.library.rescan();
+        if let Some(target) = current_moved_to {
+            // Keep working on the photo in its new place.
+            self.document.clear();
+            self.open_photo(&target);
+        }
+        let noun = if moved == 1 { "photo" } else { "photos" };
+        self.show_status(format!("Moved {moved} {noun} to {}", folder.display()), Some(Duration::from_secs(8)));
+        if !failed.is_empty() {
+            self.message("Move Favorites", format!("These photos were not moved:\n{}", failed.join("\n")));
         }
     }
 
@@ -315,6 +410,16 @@ impl IrisApp {
                     .set_file_name(Self::file_name(&sidecar))
                     .add_filter("Project Iris edits", &["json"]);
             }
+            FileRequest::ExportTo if matches!(&self.dialog, Some(Dialog::Export(e)) if e.is_batch()) => {
+                let Some(Dialog::Export(export)) = &self.dialog else { return };
+                dialog = dialog.set_title("Export Favorites To").set_directory(export.output_path());
+            }
+            FileRequest::MoveFavoritesTo => {
+                if let Some(folder) = self.library.folder() {
+                    dialog = dialog.set_directory(folder);
+                }
+                dialog = dialog.set_title("Move Favorites To");
+            }
             FileRequest::ExportTo => {
                 let Some(Dialog::Export(export)) = &self.dialog else { return };
                 let path = export.output_path();
@@ -331,12 +436,15 @@ impl IrisApp {
                     dialog.set_title("Export As").set_file_name(Self::file_name(&path)).add_filter(name, extensions);
             }
         }
+        let batch = matches!(&self.dialog, Some(Dialog::Export(e)) if e.is_batch());
         self.file_dialog_open = true;
         let sender = self.file_requests.0.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let path = match kind {
                 FileRequest::OpenPhoto => dialog.pick_file(),
+                FileRequest::MoveFavoritesTo => dialog.pick_folder(),
+                FileRequest::ExportTo if batch => dialog.pick_folder(),
                 FileRequest::SaveEditsAs | FileRequest::ExportTo => dialog.save_file(),
             };
             let _ = sender.send((kind, path));
@@ -367,6 +475,7 @@ impl IrisApp {
                         Err(e) => self.message("Save failed", format!("Cannot save edits:\n{e}")),
                     }
                 }
+                FileRequest::MoveFavoritesTo => self.move_favorites_to(&path),
                 FileRequest::ExportTo => {
                     if let Some(Dialog::Export(export)) = &mut self.dialog {
                         export.set_path(&path);
@@ -742,6 +851,18 @@ impl IrisApp {
                     self.mask_sync = true;
                 }
             }
+            Action::ToggleFavorite(path) => self.toggle_favorite(&path),
+            Action::ToggleFavoriteCurrent => {
+                if let Some(path) = self.session.path().map(Path::to_owned) {
+                    self.toggle_favorite(&path);
+                }
+            }
+            Action::ExportFavorites => self.export_favorites(),
+            Action::MoveFavorites => {
+                if !self.library.favorites().is_empty() {
+                    self.request_file(FileRequest::MoveFavoritesTo, ctx);
+                }
+            }
             Action::ToggleCrop => self.set_cropping(!self.cropping),
             Action::Confirm => self.set_cropping(false),
             Action::SetCropAspect(aspect) => {
@@ -856,6 +977,7 @@ impl IrisApp {
                 (Key::O, Action::ToggleOverlay),
                 (Key::Escape, Action::Escape),
                 (Key::R, Action::ToggleCrop),
+                (Key::F, Action::ToggleFavoriteCurrent),
                 (Key::Enter, Action::Confirm),
                 (Key::X, Action::SwapCropAspect),
                 (Key::OpenBracket, Action::BrushSize(-1)),
@@ -1110,6 +1232,23 @@ impl IrisApp {
                         self.show_status(format!("Exporting {}…", Self::file_name(&path)), None);
                         self.session.export_to(path, settings);
                     }
+                    Some(ExportOutcome::ExportBatch(folder, outputs, settings)) => {
+                        keep = false;
+                        self.settings.remember_export(&settings, export.resize, export.long_edge);
+                        // The open photo is exported as it is on screen, unsaved edits included.
+                        let current = self.session.path().map(Path::to_owned);
+                        let jobs: Vec<BatchJob> = outputs
+                            .into_iter()
+                            .map(|(raw, output)| BatchJob {
+                                edits: (Some(&raw) == current.as_ref() && self.document.is_loaded())
+                                    .then(|| self.document.edits().clone()),
+                                raw,
+                                output,
+                            })
+                            .collect();
+                        self.show_status(format!("Exporting favorites 0 of {}…", jobs.len()), None);
+                        self.session.export_batch(folder, jobs, settings);
+                    }
                     Some(ExportOutcome::Browse) => self.request_file(FileRequest::ExportTo, ctx),
                     Some(ExportOutcome::Cancel) => keep = false,
                     None => {}
@@ -1298,6 +1437,16 @@ impl IrisApp {
     }
     pub fn test_undo_label(&self) -> &str {
         self.document.undo_label()
+    }
+    /// As if the folder dialog of "Move…" had answered.
+    pub fn test_move_favorites_to(&mut self, folder: &Path) {
+        self.move_favorites_to(folder);
+    }
+    pub fn test_library(&self) -> &crate::panels::Library {
+        &self.library
+    }
+    pub fn test_status(&self) -> String {
+        self.status.as_ref().map(|s| s.text.clone()).unwrap_or_default()
     }
     pub fn test_cropping(&self) -> bool {
         self.cropping

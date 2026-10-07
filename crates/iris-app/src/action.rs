@@ -54,6 +54,15 @@ pub enum Action {
     MovePreset(PresetEntry),
     DeletePreset(PresetEntry),
 
+    // Favorites.
+    /// Mark or unmark a photo as a favorite.
+    ToggleFavorite(PathBuf),
+    /// F: mark or unmark the open photo.
+    ToggleFavoriteCurrent,
+    ExportFavorites,
+    /// Ask for a folder, then move the favorites there.
+    MoveFavorites,
+
     // Commands.
     OpenPhoto(PathBuf),
     ShowOpen,

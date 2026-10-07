@@ -101,6 +101,26 @@ pub enum SessionEvent {
         path: PathBuf,
         error: Option<String>,
     },
+    /// A batch export has finished `done` of `total` photos.
+    BatchProgress {
+        done: usize,
+        total: usize,
+    },
+    /// A batch export is finished; `failed` lists the photos that could not be exported
+    /// and why.
+    BatchFinished {
+        folder: PathBuf,
+        exported: usize,
+        failed: Vec<(String, String)>,
+    },
+}
+
+/// One photo of a batch export: the RAW file, the file to write, and the edits to use
+/// (`None`: the photo's saved edits).
+pub struct BatchJob {
+    pub raw: PathBuf,
+    pub output: PathBuf,
+    pub edits: Option<EditState>,
 }
 
 struct Decoded {
@@ -137,6 +157,15 @@ enum WorkerMessage {
     Exported {
         path: PathBuf,
         error: Option<String>,
+    },
+    BatchProgress {
+        done: usize,
+        total: usize,
+    },
+    BatchFinished {
+        folder: PathBuf,
+        exported: usize,
+        failed: Vec<(String, String)>,
     },
 }
 
@@ -362,6 +391,13 @@ impl PhotoSession {
             WorkerMessage::Exported { path, error } => {
                 self.exports_running -= 1;
                 self.events.push(SessionEvent::ExportFinished { path, error });
+            }
+            WorkerMessage::BatchProgress { done, total } => {
+                self.events.push(SessionEvent::BatchProgress { done, total });
+            }
+            WorkerMessage::BatchFinished { folder, exported, failed } => {
+                self.exports_running -= 1;
+                self.events.push(SessionEvent::BatchFinished { folder, exported, failed });
             }
         }
     }
@@ -660,6 +696,54 @@ impl PhotoSession {
                 export_image(&image, &as_shot, &edits, &settings, &output).map_err(|e| e.to_string())
             })();
             Some(WorkerMessage::Exported { path: output, error: result.err() })
+        });
+    }
+}
+
+impl PhotoSession {
+    /// Exports several photos one after the other, each with its saved edits (or the edits
+    /// given), reporting progress. The open photo's decode is reused.
+    pub fn export_batch(&mut self, folder: PathBuf, jobs: Vec<BatchJob>, settings: ExportSettings) {
+        let open = match (&self.path, &self.full_source) {
+            (Some(path), Some(image)) => Some((path.clone(), image.clone(), self.metadata.as_shot)),
+            _ => None,
+        };
+        let sender = self.sender.clone();
+        let repaint = self.repaint.clone();
+        self.exports_running += 1;
+        let progress = move |done, total| {
+            let _ = sender.send(WorkerMessage::BatchProgress { done, total });
+            repaint.request_repaint();
+        };
+        self.spawn(move || {
+            let total = jobs.len();
+            let mut failed = Vec::new();
+            for (i, job) in jobs.into_iter().enumerate() {
+                let result = (|| -> Result<(), String> {
+                    let (image, as_shot) = match &open {
+                        Some((path, image, as_shot)) if *path == job.raw => (image.clone(), *as_shot),
+                        _ => {
+                            let decoded =
+                                decode(&job.raw, DecodeQuality::Full, &|| false).map_err(|e| e.to_string())?;
+                            (Arc::new(decoded.image), decoded.metadata.as_shot)
+                        }
+                    };
+                    let defaults = EditState::new(as_shot);
+                    let edits = match job.edits {
+                        Some(edits) => edits,
+                        None => iris_persist::read_sidecar(&job.raw, &defaults)
+                            .map_err(|e| e.to_string())?
+                            .unwrap_or(defaults),
+                    };
+                    export_image(&image, &as_shot, &edits, &settings, &job.output).map_err(|e| e.to_string())
+                })();
+                if let Err(e) = result {
+                    let name = job.raw.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    failed.push((name, e));
+                }
+                progress(i + 1, total);
+            }
+            Some(WorkerMessage::BatchFinished { folder, exported: total - failed.len(), failed })
         });
     }
 }

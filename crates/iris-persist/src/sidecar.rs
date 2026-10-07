@@ -91,9 +91,19 @@ pub fn sidecar_json(raw_path: &Path, edits: &EditState) -> Value {
     Value::Object(json)
 }
 
-/// Writes edits for `raw_path` to `sidecar_path` atomically.
+/// Writes edits for `raw_path` to `sidecar_path` atomically. A favorite flag already in
+/// the file is kept.
 pub fn write_sidecar(sidecar_path: &Path, raw_path: &Path, edits: &EditState) -> Result<(), Error> {
-    write_atomically(sidecar_path, &sidecar_json(raw_path, edits))
+    let mut json = sidecar_json(raw_path, edits);
+    let favorite = sidecar_path
+        .exists()
+        .then(|| read_json_object(sidecar_path).ok())
+        .flatten()
+        .and_then(|old| old.get("favorite").cloned());
+    if let (Some(favorite), Some(object)) = (favorite, json.as_object_mut()) {
+        object.insert("favorite".into(), favorite);
+    }
+    write_atomically(sidecar_path, &json)
 }
 
 #[cfg(test)]

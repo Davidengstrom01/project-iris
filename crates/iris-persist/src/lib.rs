@@ -1,6 +1,7 @@
 //! `.iris.json` sidecars and preset files. Both are JSON documents in the format the
 //! C++ version wrote, so existing files keep working.
 
+pub mod favorites;
 pub mod json;
 pub mod library;
 pub mod preset;
@@ -12,6 +13,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
+pub use favorites::{has_edits, is_favorite, move_photo, set_favorite};
 pub use library::{PresetEntry, PresetLibrary};
 pub use preset::Preset;
 pub use sidecar::{read_sidecar, read_sidecar_file, sidecar_path_for, write_sidecar};

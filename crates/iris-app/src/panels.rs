@@ -11,7 +11,7 @@ use iris_core::{
     BasicAdjustments, BrushMode, HslAdjustments, HslBand, HslColor, Mask, MaskType, PhotoMetadata, ToneCurve,
     WhiteBalance,
 };
-use iris_persist::{PresetEntry, PresetLibrary, sidecar_path_for};
+use iris_persist::{PresetEntry, PresetLibrary};
 
 use crate::action::Action;
 use crate::curve_editor::CurveEditor;
@@ -726,12 +726,50 @@ pub fn info(ui: &mut Ui, metadata: Option<&PhotoMetadata>, file_name: &str) {
 
 // --- Library ----------------------------------------------------------------------
 
+/// A five-pointed star, filled or as an outline (painted, so no font glyph is needed).
+pub fn star(painter: &egui::Painter, center: egui::Pos2, radius: f32, filled: bool, color: Color32) {
+    let points: Vec<egui::Pos2> = (0..10)
+        .map(|i| {
+            let r = if i % 2 == 0 { radius } else { radius * 0.45 };
+            let a = std::f32::consts::PI * (i as f32 / 5.0 - 0.5);
+            center + egui::vec2(r * a.cos(), r * a.sin())
+        })
+        .collect();
+    if filled {
+        // A fan from the centre fills the (concave) star.
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(center, color);
+        for p in &points {
+            mesh.colored_vertex(*p, color);
+        }
+        for i in 0..10u32 {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % 10);
+        }
+        painter.add(mesh);
+    } else {
+        painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.2, color)));
+    }
+}
+
+/// Gold, for favorites.
+pub const FAVORITE: Color32 = Color32::from_rgb(0xf2, 0xc0, 0x4a);
+
+/// One photo in the library.
+#[derive(Clone, Debug)]
+pub struct Photo {
+    pub path: PathBuf,
+    pub name: String,
+    /// Has saved edits.
+    pub edited: bool,
+    pub favorite: bool,
+}
+
 /// The RAW photos in the open photo's folder.
 #[derive(Default)]
 pub struct Library {
     folder: Option<PathBuf>,
-    /// (path, file name, has saved edits)
-    photos: Vec<(PathBuf, String, bool)>,
+    photos: Vec<Photo>,
+    favorites_only: bool,
     scroll_to_current: bool,
 }
 
@@ -739,36 +777,72 @@ impl Library {
     pub fn show_folder_of(&mut self, path: &Path) {
         let folder = path.parent().map(Path::to_owned);
         self.scroll_to_current = true;
-        if folder == self.folder {
-            return;
+        if folder != self.folder {
+            self.folder = folder;
+            self.rescan();
         }
-        self.folder = folder;
+    }
+
+    /// Reads the folder again (after photos were moved in or out).
+    pub fn rescan(&mut self) {
         self.photos.clear();
         let Some(dir) = &self.folder else { return };
-        let mut photos: Vec<(PathBuf, String, bool)> = std::fs::read_dir(dir)
+        let mut photos: Vec<Photo> = std::fs::read_dir(dir)
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.is_file() && iris_raw::is_raw_file(p))
-            .map(|p| {
-                let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                let edited = sidecar_path_for(&p).exists();
-                (p, name, edited)
+            .map(|path| Photo {
+                name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                edited: iris_persist::has_edits(&path),
+                favorite: iris_persist::is_favorite(&path),
+                path,
             })
             .collect();
-        photos.sort_by_key(|(_, name, _)| name.to_lowercase());
+        photos.sort_by_key(|p| p.name.to_lowercase());
         self.photos = photos;
     }
 
+    pub fn folder(&self) -> Option<&Path> {
+        self.folder.as_deref()
+    }
+
     pub fn set_edited(&mut self, path: &Path, edited: bool) {
-        for photo in self.photos.iter_mut().filter(|p| p.0 == path) {
-            photo.2 = edited;
+        for photo in self.photos.iter_mut().filter(|p| p.path == path) {
+            photo.edited = edited;
         }
     }
 
+    pub fn set_favorite(&mut self, path: &Path, favorite: bool) {
+        for photo in self.photos.iter_mut().filter(|p| p.path == path) {
+            photo.favorite = favorite;
+        }
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        self.photos.iter().any(|p| p.path == path && p.favorite)
+    }
+
+    /// The favorites in this folder, in name order.
+    pub fn favorites(&self) -> Vec<PathBuf> {
+        self.photos.iter().filter(|p| p.favorite).map(|p| p.path.clone()).collect()
+    }
+
     pub fn ui(&mut self, ui: &mut Ui, current: Option<&Path>, actions: &mut Vec<Action>) {
-        panel_title(ui, "LIBRARY", |_| {});
+        let favorites = self.photos.iter().filter(|p| p.favorite).count();
+        if favorites == 0 {
+            self.favorites_only = false;
+        }
+        panel_title(ui, "LIBRARY", |ui| {
+            if favorites > 0 {
+                let mut only = self.favorites_only;
+                if small_toggle(ui, only, "Favorites", "Show only the favorites").clicked() {
+                    only = !only;
+                }
+                self.favorites_only = only;
+            }
+        });
         let folder_name = self
             .folder
             .as_ref()
@@ -781,15 +855,49 @@ impl Library {
             }
         });
         ui.add_space(4.0);
+
+        // The favorites' actions sit at the bottom of the panel.
+        if favorites > 0 {
+            egui::Panel::bottom("library-favorites").frame(egui::Frame::NONE).show(ui, |ui| {
+                widgets::separator(ui);
+                ui.add_space(4.0);
+                padded(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                        star(ui.painter(), rect.center(), 6.5, true, FAVORITE);
+                        let noun = if favorites == 1 { "favorite" } else { "favorites" };
+                        ui.label(RichText::new(format!("{favorites} {noun}")).color(theme::BODY_TEXT));
+                    });
+                    ui.horizontal(|ui| {
+                        if small_button(ui, "Export…", "Export all favorites to a folder").clicked() {
+                            actions.push(Action::ExportFavorites);
+                        }
+                        if small_button(ui, "Move…", "Move the favorites (with their edits) to another folder")
+                            .clicked()
+                        {
+                            actions.push(Action::MoveFavorites);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+            });
+        }
+
         let scroll = std::mem::take(&mut self.scroll_to_current);
+        let favorites_only = self.favorites_only;
         egui::ScrollArea::vertical().id_salt("library").auto_shrink([false, false]).show(ui, |ui| {
-            for (path, name, edited) in &self.photos {
-                let selected = current == Some(path.as_path());
+            for photo in self.photos.iter().filter(|p| !favorites_only || p.favorite) {
+                let selected = current == Some(photo.path.as_path());
                 let (rect, response) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
                 response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, name)
+                    egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &photo.name)
                 });
+                let star_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - MARGIN - 6.0, rect.center().y),
+                    egui::vec2(22.0, 22.0),
+                );
+                let over_star = response.hover_pos().is_some_and(|p| star_rect.contains(p));
                 let fill = if selected {
                     theme::SELECTION
                 } else if response.hovered() {
@@ -800,24 +908,44 @@ impl Library {
                 let painter = ui.painter();
                 painter.rect_filled(rect, 0.0, fill);
                 // A small dot marks photos that have saved edits.
-                if *edited {
+                if photo.edited {
                     painter.circle_filled(egui::pos2(rect.left() + MARGIN + 3.0, rect.center().y), 3.0, theme::ACCENT);
                 }
                 let color = if selected { Color32::WHITE } else { theme::BODY_TEXT };
                 painter.text(
                     egui::pos2(rect.left() + MARGIN + 12.0, rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    name,
+                    &photo.name,
                     egui::FontId::proportional(13.0),
                     color,
                 );
-                let response = if *edited { response.on_hover_text("Has saved edits") } else { response };
-                if response.clicked() && !selected {
-                    actions.push(Action::OpenPhoto(path.clone()));
+                // The star: always shown for favorites, as an outline on hover otherwise.
+                if photo.favorite {
+                    star(painter, star_rect.center(), 6.5, true, FAVORITE);
+                } else if response.hovered() {
+                    let outline = if over_star { FAVORITE } else { theme::DIM_TEXT };
+                    star(painter, star_rect.center(), 6.5, false, outline);
+                }
+                let tip = match (over_star, photo.favorite, photo.edited) {
+                    (true, true, _) => "Remove from favorites (F)",
+                    (true, false, _) => "Add to favorites (F)",
+                    (false, _, true) => "Has saved edits",
+                    _ => "",
+                };
+                let response = if tip.is_empty() { response } else { response.on_hover_text(tip) };
+                if response.clicked() {
+                    if over_star {
+                        actions.push(Action::ToggleFavorite(photo.path.clone()));
+                    } else if !selected {
+                        actions.push(Action::OpenPhoto(photo.path.clone()));
+                    }
                 }
                 if selected && scroll {
                     response.scroll_to_me(None);
                 }
+            }
+            if favorites_only && favorites == 0 {
+                padded(ui, |ui| ui.label(RichText::new("No favorites in this folder.").color(theme::DIM_TEXT)));
             }
         });
     }

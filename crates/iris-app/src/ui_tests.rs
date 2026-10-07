@@ -326,6 +326,83 @@ fn ui_detail_panel() {
     assert!(h.state().test_edits().detail.is_neutral());
 }
 
+#[test]
+fn ui_favorites() {
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+
+    // F marks the open photo; the star in the library marks another.
+    press(&mut h, Modifiers::NONE, Key::F);
+    assert!(iris_persist::is_favorite(&f.photo_a));
+    assert!(!iris_persist::has_edits(&f.photo_a)); // just the flag, no edits saved
+    let b_name = f.photo_b.file_name().unwrap().to_string_lossy().into_owned();
+    let row = h.get_by_label(&b_name).rect();
+    let star = egui::pos2(row.right() - 18.0, row.center().y);
+    h.event(egui::Event::PointerMoved(star));
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: star,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: star,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    assert!(iris_persist::is_favorite(&f.photo_b), "clicking the star marks the photo");
+    assert!(h.state().test_path().ends_with("a.ARW"), "clicking the star does not open the photo");
+    assert_eq!(h.state().test_library().favorites().len(), 2);
+
+    // The filter shows only favorites; unmark one again with F.
+    press(&mut h, Modifiers::NONE, Key::F);
+    assert!(!iris_persist::is_favorite(&f.photo_a));
+    assert!(!iris_persist::sidecar_path_for(&f.photo_a).exists()); // the flag-only sidecar is gone
+    // ("a.ARW" is also in the Info panel, so count the labels.)
+    let shown = |h: &Harness<'_, IrisApp>, name: &str| h.get_all_by_label(name).count();
+    let before = shown(&h, "a.ARW");
+    click(&mut h, "Favorites");
+    assert_eq!(shown(&h, "a.ARW"), before - 1);
+    assert_eq!(shown(&h, &b_name), 1);
+    click(&mut h, "Favorites");
+    assert_eq!(shown(&h, "a.ARW"), before);
+    press(&mut h, Modifiers::NONE, Key::F);
+
+    // Export the favorites into a folder.
+    click(&mut h, "Export…");
+    let Some(Dialog::Export(dialog)) = h.state_mut().test_dialog_mut() else { panic!("no export dialog") };
+    assert!(dialog.is_batch());
+    let out = f.photo_a.parent().unwrap().join("out");
+    dialog.set_path(&out);
+    h.step();
+    click(&mut h, "Export");
+    wait_until(&mut h, "the batch export", |app| app.test_exports_running() == 0);
+    assert!(out.join("a.jpg").exists() && out.join("b.jpg").exists());
+    assert!(h.state().test_status().starts_with("Exported 2 photos"));
+
+    // Move them: the open photo has unsaved edits, so that is asked first.
+    let mut basic = h.state().test_edits().basic;
+    basic.exposure = 0.4;
+    h.state_mut().test_apply(Action::EditBasic(basic));
+    let picks = f.photo_a.parent().unwrap().parent().unwrap().join("picks");
+    std::fs::create_dir(&picks).unwrap();
+    h.state_mut().test_move_favorites_to(&picks);
+    assert!(matches!(h.state().test_dialog(), Some(Dialog::Unsaved { .. })));
+    click(&mut h, "Save");
+    assert!(picks.join("a.ARW").exists() && picks.join("b.ARW").exists());
+    assert!(!f.photo_a.exists() && !f.photo_b.exists());
+    // The open photo followed, with its edits and flag.
+    wait_until(&mut h, "the moved photo", |app| app.test_loaded() && app.test_path() == picks.join("a.ARW"));
+    assert_eq!(h.state().test_edits().basic.exposure, 0.4);
+    assert!(iris_persist::is_favorite(&picks.join("a.ARW")));
+    assert_eq!(h.state().test_library().favorites().len(), 2);
+}
+
 /// Screenshots of the main states, for looking at the UI without a display:
 ///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 #[test]
@@ -386,6 +463,12 @@ fn ui_screenshots() {
     wait_until(&mut h, "the full-resolution image", |app| app.view().has_full_image());
     h.get_all_by_label("Amount").last().unwrap().scroll_to_me();
     shot(&mut h, "05-detail.png");
+
+    press(&mut h, Modifiers::NONE, Key::Num1);
+    press(&mut h, Modifiers::NONE, Key::F);
+    let b_row = h.get_by_label("b.ARW").rect();
+    h.event(egui::Event::PointerMoved(egui::pos2(b_row.right() - 18.0, b_row.center().y)));
+    shot(&mut h, "06-favorites.png");
 }
 
 fn image_size(path: &Path) -> [usize; 2] {

@@ -15,6 +15,8 @@ use crate::theme;
 #[derive(Clone, Debug)]
 pub enum AfterSave {
     Open(PathBuf),
+    /// Move the favorites into this folder.
+    MoveFavorites(PathBuf),
     Quit,
 }
 
@@ -77,12 +79,16 @@ pub struct ExportDialog {
     pub path: String,
     error: Option<String>,
     confirm_replace: bool,
+    /// Exporting several photos (the favorites) into the folder in `path`.
+    batch: Option<Vec<PathBuf>>,
 }
 
 pub enum ExportOutcome {
     Cancel,
     Browse,
     Export(PathBuf, ExportSettings),
+    /// Into a folder: each photo and the file to write.
+    ExportBatch(PathBuf, Vec<(PathBuf, PathBuf)>, ExportSettings),
 }
 
 impl ExportDialog {
@@ -99,7 +105,40 @@ impl ExportDialog {
             path: path.display().to_string(),
             error: None,
             confirm_replace: false,
+            batch: None,
         }
+    }
+
+    /// Exports `photos` into a folder (by default "Export" next to them).
+    pub fn new_batch(photos: Vec<PathBuf>, settings: &Settings) -> Self {
+        let folder = photos.first().and_then(|p| p.parent()).map(|d| d.join("Export")).unwrap_or_default();
+        let raw_path = photos.first().cloned().unwrap_or_default();
+        Self { path: folder.display().to_string(), batch: Some(photos), ..Self::new(&raw_path, settings) }
+    }
+
+    pub fn is_batch(&self) -> bool {
+        self.batch.is_some()
+    }
+
+    /// The batch's photos and the files they are written to. Photos that share a name
+    /// (photo.ARW, photo.CR2) keep their extension in it so they do not overwrite each other.
+    pub fn batch_outputs(&self) -> Vec<(PathBuf, PathBuf)> {
+        let folder = self.output_path();
+        let photos = self.batch.as_deref().unwrap_or_default();
+        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        photos
+            .iter()
+            .map(|photo| {
+                let shared = photos.iter().filter(|other| stem(other) == stem(photo)).count() > 1;
+                let name = if shared {
+                    let ext = photo.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+                    format!("{}_{ext}", stem(photo))
+                } else {
+                    stem(photo)
+                };
+                (photo.clone(), folder.join(name).with_extension(self.format.extension()))
+            })
+            .collect()
     }
 
     pub fn settings(&self) -> ExportSettings {
@@ -114,16 +153,44 @@ impl ExportDialog {
     /// The extension always matches the export format, so the RAW file can never be the
     /// target.
     pub fn output_path(&self) -> PathBuf {
-        let path = with_extension(Path::new(self.path.trim()), self.format);
+        let path = if self.is_batch() {
+            PathBuf::from(self.path.trim())
+        } else {
+            with_extension(Path::new(self.path.trim()), self.format)
+        };
         std::path::absolute(&path).unwrap_or(path)
     }
 
     pub fn set_path(&mut self, path: &Path) {
-        self.path = with_extension(path, self.format).display().to_string();
+        self.path = if self.is_batch() {
+            path.display().to_string()
+        } else {
+            with_extension(path, self.format).display().to_string()
+        };
         self.confirm_replace = false;
     }
 
+    fn accept_batch(&mut self) -> Option<ExportOutcome> {
+        let folder = self.output_path();
+        if self.path.trim().is_empty() {
+            return None;
+        }
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            self.error = Some(format!("Cannot create the folder {}: {e}", folder.display()));
+            return None;
+        }
+        let outputs = self.batch_outputs();
+        if outputs.iter().any(|(_, out)| out.exists()) && !self.confirm_replace {
+            self.confirm_replace = true;
+            return None;
+        }
+        Some(ExportOutcome::ExportBatch(folder, outputs, self.settings()))
+    }
+
     fn accept(&mut self) -> Option<ExportOutcome> {
+        if self.is_batch() {
+            return self.accept_batch();
+        }
         let path = self.output_path();
         if self.path.trim().is_empty() || path == self.raw_path {
             return None;
@@ -141,10 +208,23 @@ impl ExportDialog {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) -> Option<ExportOutcome> {
-        heading(ui, "Export");
+        match &self.batch {
+            Some(photos) if photos.len() == 1 => heading(ui, "Export 1 Favorite"),
+            Some(photos) => heading(ui, &format!("Export {} Favorites", photos.len())),
+            None => heading(ui, "Export"),
+        }
         if self.confirm_replace {
-            let name = self.output_path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            ui.label(format!("{name} already exists. Replace it?"));
+            if self.is_batch() {
+                let existing = self.batch_outputs().iter().filter(|(_, out)| out.exists()).count();
+                let files = if existing == 1 { "1 file" } else { &format!("{existing} files") };
+                ui.label(format!(
+                    "{files} with these names already exist in {}. Replace them?",
+                    self.output_path().display()
+                ));
+            } else {
+                let name = self.output_path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                ui.label(format!("{name} already exists. Replace it?"));
+            }
             return match buttons(ui, &[("Replace", true), ("Cancel", true)]) {
                 Some(0) => self.accept(),
                 Some(_) => {
@@ -170,7 +250,7 @@ impl ExportDialog {
                     ui.selectable_value(&mut self.format, ExportFormat::Png, "PNG");
                     ui.selectable_value(&mut self.format, ExportFormat::Tiff, "TIFF");
                 });
-            if self.format != before {
+            if self.format != before && !self.is_batch() {
                 self.path = with_extension(Path::new(&self.path), self.format).display().to_string();
             }
             ui.end_row();
@@ -202,7 +282,7 @@ impl ExportDialog {
             });
             ui.end_row();
 
-            ui.label("File");
+            ui.label(if self.is_batch() { "Folder" } else { "File" });
             ui.horizontal(|ui| {
                 let edit = ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(320.0));
                 if edit.changed() {
