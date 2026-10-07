@@ -1,7 +1,9 @@
 //! Rendered images on the GPU. Large images are split into tiles so that a full-resolution
 //! photo fits within any GPU's maximum texture size.
 
-use egui::{Color32, ColorImage, Painter, Pos2, Rect, TextureFilter, TextureHandle, TextureOptions, Vec2};
+use std::sync::Arc;
+
+use egui::{Color32, ColorImage, ImageData, Painter, Pos2, Rect, TextureFilter, TextureHandle, TextureOptions, Vec2};
 use iris_core::EncodedImage;
 
 /// Largest tile edge in pixels; renderers with a smaller maximum texture size get smaller
@@ -63,12 +65,26 @@ impl TiledImage {
 }
 
 /// How an image is sampled when drawn larger than its pixels.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Magnify {
-    /// Smooth (a preview that is temporarily enlarged).
+    /// Smooth (moderate enlargement).
     Smooth,
     /// Crisp pixels (inspecting detail at high zoom).
     Pixels,
+}
+
+impl Magnify {
+    fn options(self) -> TextureOptions {
+        TextureOptions {
+            magnification: match self {
+                Magnify::Smooth => TextureFilter::Linear,
+                Magnify::Pixels => TextureFilter::Nearest,
+            },
+            minification: TextureFilter::Linear,
+            mipmap_mode: Some(TextureFilter::Linear),
+            ..TextureOptions::LINEAR
+        }
+    }
 }
 
 /// A [`TiledImage`] uploaded to the GPU.
@@ -76,19 +92,25 @@ pub struct TiledTexture {
     pub width: usize,
     pub height: usize,
     tiles: Vec<(Rect, TextureHandle)>,
+    magnify: Magnify,
+    /// Kept for textures whose filter can change (see [`Self::set_magnify`]).
+    pixels: Option<Vec<Arc<ColorImage>>>,
 }
 
 impl TiledTexture {
+    /// Uploads with a fixed filter.
     pub fn upload(ctx: &egui::Context, name: &str, image: TiledImage, magnify: Magnify) -> Self {
-        let options = TextureOptions {
-            magnification: match magnify {
-                Magnify::Smooth => TextureFilter::Linear,
-                Magnify::Pixels => TextureFilter::Nearest,
-            },
-            minification: TextureFilter::Linear,
-            mipmap_mode: Some(TextureFilter::Linear),
-            ..TextureOptions::LINEAR
-        };
+        Self::upload_with(ctx, name, image, magnify, false)
+    }
+
+    /// Uploads keeping the pixels, so the filter can follow the zoom (smooth up to 200%,
+    /// crisp pixels beyond).
+    pub fn upload_adaptive(ctx: &egui::Context, name: &str, image: TiledImage) -> Self {
+        Self::upload_with(ctx, name, image, Magnify::Smooth, true)
+    }
+
+    fn upload_with(ctx: &egui::Context, name: &str, image: TiledImage, magnify: Magnify, keep: bool) -> Self {
+        let mut pixels = keep.then(Vec::new);
         let tiles = image
             .tiles
             .into_iter()
@@ -98,10 +120,26 @@ impl TiledTexture {
                     Pos2::new(x as f32, y as f32),
                     Vec2::new(tile.width() as f32, tile.height() as f32),
                 );
-                (rect, ctx.load_texture(format!("{name}-{i}"), tile, options))
+                let tile = Arc::new(tile);
+                if let Some(kept) = &mut pixels {
+                    kept.push(tile.clone());
+                }
+                (rect, ctx.load_texture(format!("{name}-{i}"), ImageData::Color(tile), magnify.options()))
             })
             .collect();
-        Self { width: image.width, height: image.height, tiles }
+        Self { width: image.width, height: image.height, tiles, magnify, pixels }
+    }
+
+    /// Changes the magnification filter (re-uploads; only for adaptive textures).
+    pub fn set_magnify(&mut self, magnify: Magnify) {
+        if magnify == self.magnify {
+            return;
+        }
+        let Some(pixels) = &self.pixels else { return };
+        for ((_, texture), tile) in self.tiles.iter_mut().zip(pixels) {
+            texture.set(ImageData::Color(tile.clone()), magnify.options());
+        }
+        self.magnify = magnify;
     }
 
     /// Draws the whole image into `dest` (screen points), clipped to `clip`.
@@ -123,6 +161,19 @@ impl TiledTexture {
 mod tests {
     use super::*;
     use iris_core::Samples;
+
+    #[test]
+    fn only_adaptive_textures_change_filter() {
+        let ctx = egui::Context::default();
+        let image = || TiledImage::from_pixels(2, 2, &[Color32::RED; 4], TILE);
+        let mut adaptive = TiledTexture::upload_adaptive(&ctx, "a", image());
+        assert_eq!(adaptive.magnify, Magnify::Smooth);
+        adaptive.set_magnify(Magnify::Pixels);
+        assert_eq!(adaptive.magnify, Magnify::Pixels);
+        let mut fixed = TiledTexture::upload(&ctx, "f", image(), Magnify::Smooth);
+        fixed.set_magnify(Magnify::Pixels);
+        assert_eq!(fixed.magnify, Magnify::Smooth);
+    }
 
     #[test]
     fn large_images_are_tiled() {

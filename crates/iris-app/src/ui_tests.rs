@@ -312,6 +312,9 @@ fn ui_screenshots() {
     };
     wait_until(&mut h, "the preview", |app| app.test_loaded());
     shot(&mut h, "01-photo.png");
+    h.set_size(egui::vec2(780.0, 900.0));
+    shot(&mut h, "01-narrow.png");
+    h.set_size(egui::vec2(1500.0, 950.0));
 
     press(&mut h, Modifiers::NONE, Key::R);
     h.state_mut().test_apply(Action::Straighten(4.0));

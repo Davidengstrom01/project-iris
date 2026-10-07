@@ -185,14 +185,14 @@ impl IrisApp {
                     self.set_histogram(histogram);
                 }
                 SessionEvent::FullImageReady(image) => {
-                    self.view.set_full_image(Some(TiledTexture::upload(ctx, "full", image, Magnify::Pixels)));
+                    self.view.set_full_image(Some(TiledTexture::upload_adaptive(ctx, "full", image)));
                 }
                 SessionEvent::FullImageInvalidated => self.view.set_full_image(None),
                 SessionEvent::BeforePreviewReady(image) => {
                     self.view.set_before_preview(TiledTexture::upload(ctx, "before", image, Magnify::Smooth));
                 }
                 SessionEvent::BeforeFullReady(image) => {
-                    self.view.set_before_full(TiledTexture::upload(ctx, "before-full", image, Magnify::Pixels));
+                    self.view.set_before_full(TiledTexture::upload_adaptive(ctx, "before-full", image));
                 }
                 SessionEvent::MaskOverlayReady(image) => {
                     if self.selected_mask.is_some() {
@@ -902,7 +902,7 @@ impl IrisApp {
 
     fn toolbar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let loaded = self.document.is_loaded();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().button_padding = egui::vec2(12.0, 5.0);
             ui.add_space(4.0);
             ui.label(
@@ -960,10 +960,19 @@ impl IrisApp {
             ui.separator();
             button(ui, "Crop", has_photo && loaded, self.cropping, "Crop and rotate (R)".into(), Action::ToggleCrop);
             button(ui, "Masks", loaded, self.selected_mask.is_some(), "Edit masks (M)".into(), Action::ToggleMasks);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                button(ui, "100%", has_photo, false, "View at 100% (2)".into(), Action::ActualSize);
+            // Zoom buttons on the right when there is room; otherwise they follow inline (and
+            // wrap), rather than drawing over the buttons before them.
+            // (In a wrapping row available_width() is the whole row, so measure what is left.)
+            if ui.max_rect().right() - ui.cursor().left() > 130.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    button(ui, "100%", has_photo, false, "View at 100% (2)".into(), Action::ActualSize);
+                    button(ui, "Fit", has_photo, false, "Fit image to window (1)".into(), Action::Fit);
+                });
+            } else {
+                ui.separator();
                 button(ui, "Fit", has_photo, false, "Fit image to window (1)".into(), Action::Fit);
-            });
+                button(ui, "100%", has_photo, false, "View at 100% (2)".into(), Action::ActualSize);
+            }
         });
     }
 

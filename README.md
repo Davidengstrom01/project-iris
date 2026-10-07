@@ -16,7 +16,7 @@ Original RAW files are only ever opened read-only.
 | 4 — Tone curve | Histogram, RGB point curve, S / inverse-S presets | ✅ done |
 | 5 — HSL | Hue / saturation / luminance for eight colour ranges | ✅ done |
 | 6 — Masking | Brush, linear and radial masks; overlay; per-mask adjustments; invert; add/subtract/erase | ✅ done |
-| 7 — Crop & polish | Crop with aspect ratios, 90° rotation, straightening; crop shortcuts | ✅ crop done, polish ongoing |
+| 7 — Crop & polish | Crop with aspect ratios, 90° rotation, straightening; crop shortcuts; smooth zoom, narrow-window toolbar | ✅ done |
 | 8 — Packaging | AppImage, `.deb`, Arch PKGBUILD, desktop entry and icon | ✅ done |
 
 ## Installing

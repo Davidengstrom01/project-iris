@@ -14,7 +14,7 @@ use iris_core::{Crop, Mask};
 use crate::crop_tool::{CropTool, FrameMapping};
 use crate::mask_editor::{Brush, Mapping, MaskEditor, Tool};
 use crate::session::Framing;
-use crate::texture::TiledTexture;
+use crate::texture::{Magnify, TiledTexture};
 use crate::theme;
 
 const MAX_ZOOM: f32 = 16.0;
@@ -548,6 +548,11 @@ impl ImageView {
 
         if response.hovered() || self.panning {
             ui.ctx().set_cursor_icon(self.cursor(pointer.hover_pos(), space_held));
+        }
+        // Smooth when mildly enlarged; crisp pixels when inspecting detail.
+        let magnify = if self.zoom >= 2.0 { Magnify::Pixels } else { Magnify::Smooth };
+        for full in [&mut self.full, &mut self.before_full].into_iter().flatten() {
+            full.set_magnify(magnify);
         }
         self.paint(&ui.painter_at(rect), space_held);
         events
