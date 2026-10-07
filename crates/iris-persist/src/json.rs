@@ -314,3 +314,53 @@ pub fn read_detail(json: Option<&Value>) -> iris_core::Detail {
     }
     .sanitized()
 }
+
+/// `[{"mode": "heal", "offset": [0.05, -0.01], "radius": 0.02, "hardness": 0.5,
+///    "opacity": 1, "flow": 1, "points": [[0.4, 0.5], ...]}, ...]`
+pub fn retouch_to_json(strokes: &[iris_core::RetouchStroke]) -> Value {
+    Value::Array(
+        strokes
+            .iter()
+            .map(|s| {
+                let points: Vec<Value> = s.points.iter().map(|p| json!([rounded(p.x), rounded(p.y)])).collect();
+                json!({
+                    "mode": s.mode.key(),
+                    "offset": [rounded(s.offset.x), rounded(s.offset.y)],
+                    "radius": rounded(s.radius),
+                    "hardness": rounded(s.hardness),
+                    "opacity": rounded(s.opacity),
+                    "flow": rounded(s.flow),
+                    "points": points,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Reads retouch strokes; unknown modes and strokes without points are skipped.
+pub fn read_retouch(json: Option<&Value>) -> Vec<iris_core::RetouchStroke> {
+    let point = |v: &Value| match v.as_array().map(Vec::as_slice) {
+        Some([x, y]) => Some(MaskPoint { x: x.as_f64()? as f32, y: y.as_f64()? as f32 }),
+        _ => None,
+    };
+    let strokes = json
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| {
+            let o = v.as_object()?;
+            let mode = iris_core::RetouchMode::from_key(o.get("mode")?.as_str()?)?;
+            let d = iris_core::RetouchStroke::default();
+            Some(iris_core::RetouchStroke {
+                mode,
+                offset: o.get("offset").and_then(point).unwrap_or(d.offset),
+                radius: f32_or(Some(o), "radius", d.radius),
+                hardness: f32_or(Some(o), "hardness", d.hardness),
+                opacity: f32_or(Some(o), "opacity", d.opacity),
+                flow: f32_or(Some(o), "flow", d.flow),
+                points: o.get("points").and_then(Value::as_array).into_iter().flatten().filter_map(point).collect(),
+            })
+        })
+        .collect();
+    iris_core::retouch::sanitized_strokes(strokes)
+}

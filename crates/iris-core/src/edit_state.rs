@@ -1,5 +1,5 @@
 use crate::color::{MAX_TEMPERATURE, MAX_TINT, MIN_TEMPERATURE};
-use crate::{Crop, Detail, HslAdjustments, Mask, ToneCurve};
+use crate::{Crop, Detail, HslAdjustments, Mask, RetouchStroke, ToneCurve};
 
 /// Illuminant the photo is balanced for, in Lightroom-style units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +44,8 @@ pub struct EditState {
     pub crop: Crop,
     /// Sharpening and noise reduction.
     pub detail: Detail,
+    /// Clone and heal strokes, applied in order before everything else.
+    pub retouch: Vec<RetouchStroke>,
     /// Name of the last preset applied, if any.
     pub applied_preset: String,
 }

@@ -1567,6 +1567,7 @@ dependencies = [
  "rayon",
  "rfd",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

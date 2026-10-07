@@ -81,9 +81,10 @@ The golden test compares renders with reference images from the C++ version; see
 - **Left**: the photos in the open photo's folder (scrolling), with the favorites' actions
   and the photo's info pinned underneath.
 - **Right**: the histogram and a row of tools — *Presets*, *Light* (white balance, tone,
-  presence and the tone curve), *Color*, *Detail*, *Crop* and *Masks*. Only the chosen tool's
-  controls are shown. Crop and Masks are also modes of the photo: choosing them starts
-  cropping or mask editing, choosing another tool ends it (**R** and **M** jump to them).
+  presence and the tone curve), *Color*, *Detail*, *Crop*, *Masks* and *Retouch*. Only the
+  chosen tool's controls are shown. Crop, Masks and Retouch are also modes of the photo:
+  choosing them starts cropping, mask editing or retouching, choosing another tool ends it
+  (**R**, **M** and **S**/**H** jump to them).
 
 ## Keyboard shortcuts
 
@@ -111,6 +112,10 @@ The golden test compares renders with reference images from the C++ version; see
 | Ctrl+[ / Ctrl+] | Rotate 90° left / right |
 | F | Mark / unmark the open photo as a favorite |
 | M | Edit masks (creates a brush mask if there are none) |
+| B | Paint on the selected mask (or a new brush mask) |
+| S / H | Retouch: clone / heal |
+| Alt+click | Retouch: choose where to copy from |
+| I | White-balance eyedropper |
 | Esc | Stop editing masks / cancel the white-balance eyedropper |
 | O | Show/hide the mask overlay |
 | [ / ] | Smaller / larger brush |
@@ -151,6 +156,7 @@ produces the screen preview and the exported file; only the resolution differs.
 ```
 source (linear Rec.2020, as-shot WB)
   -> resize
+  -> clone / heal strokes            on the scene-linear source, before anything is developed
   -> white balance + exposure        one 3x3 matrix (Bradford adaptation), scene-linear
   -> highlights / shadows            edge-aware local gain (guided-filter base layer)
   -> masks                           local WB, exposure, highlights/shadows, contrast, saturation
@@ -193,7 +199,7 @@ photo.ARW
 photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
                      "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]},
                      "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}},
-                     "masks": [...], "crop": {...}, "detail": {...}}
+                     "masks": [...], "crop": {...}, "detail": {...}, "retouch": [...]}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name
@@ -206,7 +212,7 @@ A mask selects part of the photo and applies Exposure, Contrast, Highlights, Sha
 Saturation and Temperature there, on top of the global settings. Press **M** (or use
 *+ Brush / + Linear / + Radial* in the Masks panel) and edit on the photo:
 
-- **Brush**: paint with *Add*; *Subtract* removes the effect where painted (gradient
+- **Brush** (**B**): paint with *Add*; *Subtract* removes the effect where painted (gradient
   included); *Erase* (or Alt+drag) removes earlier strokes. Size, feather and opacity are
   per stroke; a stroke does not build up where it crosses itself.
 - **Linear gradient**: drag from where the effect is full to where it ends; drag the centre
@@ -242,6 +248,23 @@ offers:
 The flag is stored in the photo's sidecar (`"favorite": true`), so it moves with the photo.
 A favorite without edits gets a sidecar holding just the flag, which is removed again when
 the star is cleared.
+
+### Retouch
+
+*Retouch* (**S** to clone, **H** to heal) removes spots and distractions. **Alt-click** where to
+copy from, then paint over what should go; the brush shows the pixels it would copy and a
+crosshair marks the source.
+
+- **Clone** copies the source pixels. **Heal** copies the source's texture but keeps the
+  colour and light around the destination (a Poisson blend), so patches do not show.
+- *Size*, *Hardness*, *Opacity* and *Flow* (below 100 the effect builds up along a stroke).
+- *Aligned*: the source keeps its distance from the brush between strokes; without it,
+  every stroke copies from the chosen source point again.
+
+Each stroke is stored as an operation (source offset, path and brush) in the sidecar — the
+RAW is never touched — and is one undo step. Strokes apply to the scene-linear source before
+anything is developed, so cloned pixels follow every later adjustment like the rest of the
+photo. They are never part of presets.
 
 ### Detail
 

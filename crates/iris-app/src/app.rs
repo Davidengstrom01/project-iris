@@ -70,6 +70,7 @@ pub struct IrisApp {
     cropping: bool,
     /// The tool shown in the right panel.
     tool: ToolTab,
+    retouch_brush: crate::retouch_editor::RetouchBrush,
     /// The selected mask is edited on the photo (None = normal viewing).
     selected_mask: Option<usize>,
     last_selected_mask: usize,
@@ -103,7 +104,7 @@ impl IrisApp {
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
         // Crop and Masks are modes of the photo; a new session starts in Light instead.
         let tool = match ToolTab::from_key(&settings.tool) {
-            ToolTab::Crop | ToolTab::Masks => ToolTab::Light,
+            ToolTab::Crop | ToolTab::Masks | ToolTab::Retouch => ToolTab::Light,
             tool => tool,
         };
         let presets = PresetLibrary::new(preset_directory);
@@ -125,6 +126,7 @@ impl IrisApp {
             eyedropper: false,
             cropping: false,
             tool,
+            retouch_brush: Default::default(),
             selected_mask: None,
             last_selected_mask: 0,
             mask_sync: false,
@@ -913,6 +915,39 @@ impl IrisApp {
                 }
             }
             Action::SelectTool(tool) => self.set_tool(tool),
+            Action::Retouch(mode) => {
+                if loaded {
+                    self.retouch_brush.mode = mode;
+                    self.set_tool(ToolTab::Retouch);
+                    if !self.view.has_retouch_source() {
+                        self.show_status("Alt-click the photo to choose where to copy from.", None);
+                    }
+                }
+            }
+            Action::ClearRetouch => {
+                let mut state = self.document.edits().clone();
+                state.retouch.clear();
+                self.commit(state, "Clear Retouching");
+            }
+            Action::RemoveLastRetouch => {
+                let mut state = self.document.edits().clone();
+                state.retouch.pop();
+                self.commit(state, "Remove Stroke");
+            }
+            Action::MaskBrush => {
+                if loaded {
+                    self.set_cropping(false);
+                    if self.selected_mask.is_some() {
+                        // Paint on the selected mask (gradients can be refined with the brush too).
+                        self.mask_panel.tool = Tool::Brush;
+                        self.mask_panel.brush.mode = iris_core::BrushMode::Add;
+                        self.mask_sync = true;
+                    } else {
+                        self.add_mask(iris_core::MaskType::Brush);
+                    }
+                    self.tool = ToolTab::Masks;
+                }
+            }
             Action::ToggleCrop => {
                 if self.cropping {
                     self.set_cropping(false);
@@ -987,6 +1022,27 @@ impl IrisApp {
             }
             ViewEvent::CropGestureFinished => self.document.end_gesture(),
             ViewEvent::CropDone => self.set_cropping(false),
+            ViewEvent::RetouchSourceSet => {
+                self.show_status("Source set. Paint over what you want to hide.", Some(Duration::from_secs(4)))
+            }
+            ViewEvent::RetouchNeedsSource => self
+                .show_status("Alt-click the photo first to choose where to copy from.", Some(Duration::from_secs(4))),
+            ViewEvent::RetouchStroke(stroke, started) => {
+                let label = match stroke.mode {
+                    iris_core::RetouchMode::Clone => "Clone Stroke",
+                    iris_core::RetouchMode::Heal => "Heal Stroke",
+                };
+                let mut state = self.document.edits().clone();
+                if started {
+                    // One undo step per stroke.
+                    self.document.begin_gesture();
+                    state.retouch.push(stroke);
+                } else if let Some(last) = state.retouch.last_mut() {
+                    *last = stroke;
+                }
+                self.edit_interactive(state, label);
+            }
+            ViewEvent::RetouchFinished => self.document.end_gesture(),
         }
     }
 
@@ -997,6 +1053,7 @@ impl IrisApp {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
+        let eyedropper = self.eyedropper;
         let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
         let command_shift = |key| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, key);
         ctx.input_mut(|i| {
@@ -1034,6 +1091,10 @@ impl IrisApp {
                 (Key::Escape, Action::Escape),
                 (Key::R, Action::ToggleCrop),
                 (Key::F, Action::ToggleFavoriteCurrent),
+                (Key::S, Action::Retouch(iris_core::RetouchMode::Clone)),
+                (Key::H, Action::Retouch(iris_core::RetouchMode::Heal)),
+                (Key::B, Action::MaskBrush),
+                (Key::I, Action::SetEyedropper(!eyedropper)),
                 (Key::Enter, Action::Confirm),
                 (Key::X, Action::SwapCropAspect),
                 (Key::OpenBracket, Action::BrushSize(-1)),
@@ -1197,6 +1258,13 @@ impl IrisApp {
                     ToolTab::Detail => panels::detail(ui, &edits.detail, actions),
                     ToolTab::Crop => panels::crop(ui, &edits.crop, self.photo_size(), self.cropping, actions),
                     ToolTab::Masks => self.mask_panel.ui(ui, &edits.masks, self.selected_mask, actions),
+                    ToolTab::Retouch => panels::retouch(
+                        ui,
+                        &mut self.retouch_brush,
+                        self.view.has_retouch_source(),
+                        edits.retouch.len(),
+                        actions,
+                    ),
                 }
             });
         });
@@ -1516,6 +1584,9 @@ impl IrisApp {
     pub fn test_status(&self) -> String {
         self.status.as_ref().map(|s| s.text.clone()).unwrap_or_default()
     }
+    pub fn test_set_retouch_size(&mut self, radius: f32) {
+        self.retouch_brush.radius = radius;
+    }
     pub fn test_tool(&self) -> ToolTab {
         self.tool
     }
@@ -1552,7 +1623,7 @@ impl eframe::App for IrisApp {
                 .default_size(240.0)
                 .min_size(190.0)
                 .show(ui, |ui| self.left_panel(ui, &mut actions));
-            egui::Panel::right("develop").frame(side).resizable(true).default_size(330.0).min_size(310.0).show(
+            egui::Panel::right("develop").frame(side).resizable(true).default_size(350.0).min_size(330.0).show(
                 ui,
                 |ui| {
                     self.right_panel(ui, &mut actions);
@@ -1569,6 +1640,8 @@ impl eframe::App for IrisApp {
             self.apply_view_event(event);
         }
         self.sync_mask_editing();
+        let retouching = self.tool == ToolTab::Retouch && self.document.is_loaded();
+        self.view.set_retouch(retouching, self.retouch_brush);
         self.session.set_full_resolution_needed(self.view.needs_full_resolution());
         self.dialogs(&ctx);
         self.update_title(&ctx);

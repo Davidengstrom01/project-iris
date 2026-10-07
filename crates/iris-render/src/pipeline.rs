@@ -2,6 +2,7 @@
 //!
 //!   source (linear Rec.2020, as-shot white balance)
 //!     -> resize
+//!     -> clone / heal strokes                (scene-linear, before anything is developed)
 //!     -> white balance + exposure           (one 3x3 matrix, scene-linear)
 //!     -> highlights / shadows                (edge-aware local gain, scene-linear)
 //!     -> masks: local white balance, exposure, highlights / shadows, contrast, saturation
@@ -23,11 +24,11 @@ use iris_core::{EditState, EncodedImage, ImageF, Mask, Samples, WhiteBalance};
 use rayon::prelude::*;
 
 use crate::color_transform::{to_srgb8, to_srgb16};
-use crate::detail;
 use crate::hsl_mixer::HslMixer;
 use crate::mask_coverage::MaskCoverage;
 use crate::resample::{fit_size, resize_area};
 use crate::tone::{ToneBaseLayer, ToneLut};
+use crate::{detail, retouch};
 
 const MIDDLE_GREY_LOG2: f32 = -2.473_931_2; // log2(0.18)
 const MIN_LUMINANCE: f32 = 1.0 / 65536.0;
@@ -355,7 +356,7 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
     if !transformed {
         // Resize first so every later stage runs at the output resolution.
         let (width, height) = fit_size(source.width, source.height, options.max_long_edge);
-        let input = resized(source, width, height);
+        let input = retouched(resized(source, width, height), edits);
         let develop = Develop::new(&input, as_shot, edits);
         let mut output = EncodedImage::new(width, height, bits);
         let scale = options.source_scale * width as f32 / source.width as f32;
@@ -403,7 +404,7 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
         }
         scale *= options.max_long_edge as f64 / long_edge(&geometry) as f64 * 0.9995;
     }
-    let input = resized(source, pw, ph);
+    let input = retouched(resized(source, pw, ph), edits);
     let develop = Develop::new(&input, as_shot, edits);
 
     // The photo pixels the result needs (with a pixel of margin for interpolation, and room
@@ -462,6 +463,16 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
         },
     );
     output
+}
+
+/// Applies the clone and heal strokes to the (resized) source, before anything is developed.
+fn retouched<'a>(input: Cow<'a, ImageF>, edits: &EditState) -> Cow<'a, ImageF> {
+    if edits.retouch.is_empty() {
+        return input;
+    }
+    let mut image = input.into_owned();
+    retouch::apply(&mut image, &edits.retouch);
+    Cow::Owned(image)
 }
 
 fn resized(source: &ImageF, width: usize, height: usize) -> Cow<'_, ImageF> {

@@ -8,6 +8,7 @@ pub mod hsl_mixer;
 pub mod mask_coverage;
 pub mod pipeline;
 pub mod resample;
+pub mod retouch;
 pub mod tone;
 pub mod white_balance;
 
@@ -491,5 +492,30 @@ pub(crate) mod tests {
         for x in 0..cropped.width {
             assert_eq!(px(&cropped, x, 20), px(&full, x + 35, 20), "x {x}");
         }
+    }
+
+    // --- Retouch ------------------------------------------------------------------
+
+    #[test]
+    fn retouch_is_developed_like_the_rest_and_matches_across_resolutions() {
+        let source = gradient(200, 100);
+        let mut edits = neutral();
+        edits.basic.exposure = 0.5;
+        edits.retouch = vec![iris_core::RetouchStroke {
+            offset: iris_core::MaskPoint::new(-0.5, 0.0),
+            radius: 0.05,
+            hardness: 1.0,
+            points: vec![iris_core::MaskPoint::new(0.75, 0.5)],
+            ..Default::default()
+        }];
+        let full = render(&source, &AS_SHOT, &edits, &RenderOptions::default());
+        let plain = render(&source, &AS_SHOT, &EditState { retouch: vec![], ..edits.clone() }, &Default::default());
+        // The cloned pixel looks like its (developed) source.
+        assert_eq!(px(&full, 150, 50), px(&plain, 50, 50));
+        assert_eq!(px(&full, 20, 50), px(&plain, 20, 50));
+        // A half-size preview agrees.
+        let half = render(&source, &AS_SHOT, &edits, &RenderOptions { max_long_edge: 100, ..Default::default() });
+        let (a, b) = (px(&half, 75, 25), px(&full, 151, 51));
+        assert!((0..3).all(|c| a[c].abs_diff(b[c]) <= 3), "{a:?} vs {b:?}");
     }
 }

@@ -11,6 +11,7 @@ pub mod hsl;
 pub mod image;
 pub mod mask;
 pub mod metadata;
+pub mod retouch;
 
 pub use crop::Crop;
 pub use curve::{CurvePoint, CurvePoints, CurveSpline, ToneCurve};
@@ -21,6 +22,7 @@ pub use hsl::{HslAdjustments, HslBand, HslColor};
 pub use image::{EncodedImage, ImageF, Samples};
 pub use mask::{BrushMode, BrushStroke, LinearGradient, LocalAdjustments, Mask, MaskPoint, MaskType, RadialGradient};
 pub use metadata::PhotoMetadata;
+pub use retouch::{RetouchMode, RetouchStroke};
 
 /// Clamps `v` into `[lo, hi]`, or returns `fallback` if it is NaN or infinite.
 pub(crate) fn clean(v: f32, lo: f32, hi: f32, fallback: f32) -> f32 {

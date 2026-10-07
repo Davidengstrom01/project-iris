@@ -13,6 +13,7 @@ use iris_core::{Crop, Mask};
 
 use crate::crop_tool::{CropTool, FrameMapping};
 use crate::mask_editor::{Brush, Mapping, MaskEditor, Tool};
+use crate::retouch_editor::{Press, RetouchBrush, RetouchEditor};
 use crate::session::Framing;
 use crate::texture::{Magnify, TiledTexture};
 use crate::theme;
@@ -53,6 +54,13 @@ pub enum ViewEvent {
     CropGestureFinished,
     /// Double-click inside the crop: done cropping.
     CropDone,
+    /// Alt-click chose where to copy from.
+    RetouchSourceSet,
+    /// A click to paint before a source was chosen.
+    RetouchNeedsSource,
+    /// A clone/heal stroke begins (`true` with its first dab), grows, and ends.
+    RetouchStroke(iris_core::RetouchStroke, bool),
+    RetouchFinished,
 }
 
 pub struct ImageView {
@@ -90,6 +98,8 @@ pub struct ImageView {
     cursor_pos: Option<Pos2>,
     /// While cropping (the rendering then shows the whole straightened frame).
     crop_tool: Option<CropTool>,
+    retouch: RetouchEditor,
+    retouch_active: bool,
 }
 
 impl Default for ImageView {
@@ -118,6 +128,8 @@ impl Default for ImageView {
             mask_overlay: None,
             cursor_pos: None,
             crop_tool: None,
+            retouch: RetouchEditor::default(),
+            retouch_active: false,
         }
     }
 }
@@ -126,6 +138,7 @@ impl ImageView {
     /// Shows a loading indicator; the next set_preview() starts a new photo (resets to fit).
     pub fn begin_loading(&mut self) {
         self.loading = true;
+        self.retouch.reset();
         self.message.clear();
         self.before_preview = None;
         self.before_full = None;
@@ -152,6 +165,19 @@ impl ImageView {
             self.full = None;
             self.fit_to_window();
         }
+    }
+
+    /// Retouching: clicks clone or heal instead of panning.
+    pub fn set_retouch(&mut self, active: bool, brush: RetouchBrush) {
+        self.retouch_active = active;
+        self.retouch.set_brush(brush);
+        if !active {
+            self.retouch.release();
+        }
+    }
+
+    pub fn has_retouch_source(&self) -> bool {
+        self.retouch.has_source()
     }
 
     /// Cropping: shows the crop rectangle over the whole frame (None = done cropping).
@@ -472,7 +498,15 @@ impl ImageView {
                 // Middle button, or Space + drag, pans; while editing a mask a plain drag edits it.
                 let pan_gesture = middle_pressed || (primary_pressed && space_held);
                 let frame = self.frame_mapping();
-                if !pan_gesture && let Some(tool) = &mut self.crop_tool {
+                if !pan_gesture && self.retouch_active {
+                    if primary_pressed {
+                        match self.retouch.press(at, &mapping, input.modifiers.alt) {
+                            Press::SourceSet => events.push(ViewEvent::RetouchSourceSet),
+                            Press::NeedsSource => events.push(ViewEvent::RetouchNeedsSource),
+                            Press::Started(stroke) => events.push(ViewEvent::RetouchStroke(stroke, true)),
+                        }
+                    }
+                } else if !pan_gesture && let Some(tool) = &mut self.crop_tool {
                     if primary_pressed && tool.press(at, &frame) {
                         events.push(ViewEvent::CropGestureStarted);
                     } else if !self.fit {
@@ -495,12 +529,16 @@ impl ImageView {
         }
 
         // Moves.
-        if self.mask_editor.is_active() {
+        if self.mask_editor.is_active() || self.retouch_active {
             self.cursor_pos = pointer.hover_pos().filter(|p| rect.contains(*p));
         }
         let frame = self.frame_mapping();
         if let Some(at) = pos {
-            if let Some(tool) = self.crop_tool.as_mut().filter(|t| t.is_dragging()) {
+            if self.retouch.is_painting() {
+                if let Some(stroke) = self.retouch.drag_to(at, &mapping) {
+                    events.push(ViewEvent::RetouchStroke(stroke, false));
+                }
+            } else if let Some(tool) = self.crop_tool.as_mut().filter(|t| t.is_dragging()) {
                 if let Some(crop) = tool.drag_to(at, &frame) {
                     events.push(ViewEvent::CropEdited(crop));
                 }
@@ -522,6 +560,9 @@ impl ImageView {
         if pointer.button_released(PointerButton::Primary) || pointer.button_released(PointerButton::Middle) {
             if self.dragging_split {
                 self.dragging_split = false;
+            } else if self.retouch.is_painting() && pointer.button_released(PointerButton::Primary) {
+                self.retouch.release();
+                events.push(ViewEvent::RetouchFinished);
             } else if let Some(tool) = self.crop_tool.as_mut().filter(|t| t.is_dragging()) {
                 tool.release();
                 events.push(ViewEvent::CropGestureFinished);
@@ -538,7 +579,12 @@ impl ImageView {
         let in_crop = |p: Pos2| self.crop_tool.as_ref().and_then(|t| t.hit(p, &frame)).is_some();
         if double_clicked && pos.is_some_and(in_crop) {
             events.push(ViewEvent::CropDone);
-        } else if double_clicked && !self.pick_mode && !self.mask_editor.is_active() && self.crop_tool.is_none() {
+        } else if double_clicked
+            && !self.pick_mode
+            && !self.mask_editor.is_active()
+            && self.crop_tool.is_none()
+            && !self.retouch_active
+        {
             if self.fit {
                 self.set_zoom(1.0, pos.unwrap_or(rect.center()));
             } else {
@@ -577,6 +623,8 @@ impl ImageView {
                 && hover.is_some_and(|p| (p.x - self.split_x()).abs() <= SPLIT_GRAB))
         {
             CursorIcon::ResizeHorizontal
+        } else if self.retouch_active && has_image && !space_held {
+            CursorIcon::Crosshair
         } else if let Some(handle) = self
             .crop_tool
             .as_ref()
@@ -599,6 +647,40 @@ impl ImageView {
     }
 
     // --- Drawing ---------------------------------------------------------------------
+
+    /// The (developed) pixels the brush would copy, shown inside the brush at the cursor.
+    fn paint_source_preview(&self, painter: &Painter, m: &Mapping, cursor: Pos2) {
+        let (Some(source), Some(texture)) =
+            (self.retouch.source_for(cursor, m), self.preview.as_ref().and_then(TiledTexture::single))
+        else {
+            return;
+        };
+        let dest = m.to_mask(cursor);
+        let offset = Vec2::new(source.x - dest.x, source.y - dest.y);
+        let origin = self.origin();
+        let scale = self.logical_scale();
+        let size = Vec2::new(self.image_size[0] as f32, self.image_size[1] as f32);
+        // Screen point -> where its source is in the rendering, as texture coordinates.
+        let uv = |p: Pos2| {
+            let photo = m.to_mask(p);
+            let at = m.mask_to_screen(iris_core::MaskPoint::new(photo.x + offset.x, photo.y + offset.y));
+            Pos2::new((at.x - origin.x) / scale / size.x, (at.y - origin.y) / scale / size.y)
+        };
+        let r = self.retouch.screen_radius(m);
+        let mut mesh = egui::Mesh::with_texture(texture);
+        let tint = Color32::from_white_alpha(200);
+        mesh.vertices.push(egui::epaint::Vertex { pos: cursor, uv: uv(cursor), color: tint });
+        const STEPS: u32 = 48;
+        for i in 0..=STEPS {
+            let a = std::f32::consts::TAU * i as f32 / STEPS as f32;
+            let p = cursor + Vec2::new(a.cos(), a.sin()) * r;
+            mesh.vertices.push(egui::epaint::Vertex { pos: p, uv: uv(p), color: tint });
+        }
+        for i in 0..STEPS {
+            mesh.add_triangle(0, 1 + i, 2 + i);
+        }
+        painter.add(mesh);
+    }
 
     fn draw_photo(&self, painter: &Painter, preview: Option<&TiledTexture>, full: Option<&TiledTexture>, clip: Rect) {
         let Some(preview) = preview else { return };
@@ -652,6 +734,13 @@ impl ImageView {
             }
             if let Some(tool) = &self.crop_tool {
                 tool.paint(&painter.with_clip_rect(rect), &self.frame_mapping());
+            }
+            if self.retouch_active && !space_held {
+                let mapping = self.mapping();
+                if let Some(cursor) = self.cursor_pos.filter(|_| !self.retouch.is_painting()) {
+                    self.paint_source_preview(painter, &mapping, cursor);
+                }
+                self.retouch.paint(painter, &mapping, self.cursor_pos);
             }
             let brush_hidden = self.mask_editor.tool() == Tool::Brush && space_held;
             self.mask_editor.paint(painter, &self.mapping(), if brush_hidden { None } else { self.cursor_pos });

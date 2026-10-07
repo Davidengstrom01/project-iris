@@ -50,6 +50,14 @@ pub enum Action {
     Straighten(f32),
     ResetCrop,
 
+    // Retouch.
+    /// S / H: the Retouch tool in clone or heal mode.
+    Retouch(iris_core::RetouchMode),
+    ClearRetouch,
+    RemoveLastRetouch,
+    /// B: paint on a mask.
+    MaskBrush,
+
     // Presets.
     ApplyPreset(Preset),
     ShowSavePreset,

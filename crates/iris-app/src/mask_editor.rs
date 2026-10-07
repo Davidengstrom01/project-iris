@@ -70,6 +70,12 @@ impl Mapping {
     }
 
     /// Screen point -> image pixels.
+    /// Photo fractions -> screen point.
+    pub fn mask_to_screen(self, p: MaskPoint) -> Pos2 {
+        let (w, h) = self.size();
+        self.to_screen(Pt::new(f64::from(p.x) * w, f64::from(p.y) * h))
+    }
+
     fn to_image(self, pos: Pos2) -> Pt {
         let (x, y) = self.photo_to_screen.inverted().map(f64::from(pos.x), f64::from(pos.y));
         Pt::new(x, y)
@@ -81,7 +87,7 @@ impl Mapping {
         Pos2::new(x as f32, y as f32)
     }
 
-    fn to_mask(self, pos: Pos2) -> MaskPoint {
+    pub fn to_mask(self, pos: Pos2) -> MaskPoint {
         let p = self.to_image(pos);
         let (w, h) = self.size();
         MaskPoint::new((p.x / w.max(1.0)) as f32, (p.y / h.max(1.0)) as f32)
@@ -512,7 +518,7 @@ impl MaskEditor {
     }
 }
 
-fn ellipse_points(center: Pos2, rx: f32, ry: f32) -> Vec<Pos2> {
+pub fn ellipse_points(center: Pos2, rx: f32, ry: f32) -> Vec<Pos2> {
     (0..=96)
         .map(|i| {
             let t = std::f32::consts::TAU * i as f32 / 96.0;
@@ -528,7 +534,7 @@ fn draw_handle(painter: &Painter, at: Pos2, filled: bool) {
 }
 
 /// A line or shape in white with a dark outline, visible on any photo.
-fn draw_outlined(painter: &Painter, points: Vec<Pos2>, dashed: bool) {
+pub fn draw_outlined(painter: &Painter, points: Vec<Pos2>, dashed: bool) {
     painter.add(Shape::line(points.clone(), Stroke::new(3.0, Color32::from_black_alpha(140))));
     let stroke = Stroke::new(1.2, Color32::from_white_alpha(230));
     if dashed {

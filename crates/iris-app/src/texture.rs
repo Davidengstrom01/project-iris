@@ -142,6 +142,14 @@ impl TiledTexture {
         self.magnify = magnify;
     }
 
+    /// The texture, if the image fits in one tile.
+    pub fn single(&self) -> Option<egui::TextureId> {
+        match self.tiles.as_slice() {
+            [(_, texture)] => Some(texture.id()),
+            _ => None,
+        }
+    }
+
     /// Draws the whole image into `dest` (screen points), clipped to `clip`.
     pub fn paint(&self, painter: &Painter, dest: Rect, clip: Rect) {
         let painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));

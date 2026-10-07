@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::json::{
     adjustments_to_json, crop_to_json, detail_to_json, hsl_to_json, masks_to_json, read_adjustments, read_crop,
-    read_detail, read_hsl, read_masks, read_tone_curve, tone_curve_to_json,
+    read_detail, read_hsl, read_masks, read_retouch, read_tone_curve, retouch_to_json, tone_curve_to_json,
 };
 use crate::{Error, read_json_object, write_atomically};
 
@@ -60,6 +60,7 @@ pub fn read_sidecar_file(sidecar_path: &Path, defaults: &EditState) -> Result<Op
     edits.masks = read_masks(json.get("masks"));
     edits.crop = read_crop(json.get("crop"));
     edits.detail = read_detail(json.get("detail"));
+    edits.retouch = read_retouch(json.get("retouch"));
     edits.applied_preset = json.get("preset").and_then(Value::as_str).unwrap_or_default().to_owned();
     Ok(Some(edits))
 }
@@ -87,6 +88,9 @@ pub fn sidecar_json(raw_path: &Path, edits: &EditState) -> Value {
     }
     if let Some(detail) = detail_to_json(&edits.detail) {
         json.insert("detail".into(), detail);
+    }
+    if !edits.retouch.is_empty() {
+        json.insert("retouch".into(), retouch_to_json(&edits.retouch));
     }
     Value::Object(json)
 }
@@ -228,6 +232,34 @@ mod tests {
         write_sidecar(&sidecar_path_for(&raw), &raw, &EditState::new(AS_SHOT)).unwrap();
         let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
         assert!(json.get("detail").is_none());
+    }
+
+    #[test]
+    fn retouch_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("r.ARW");
+        let mut edits = EditState::new(AS_SHOT);
+        edits.retouch = vec![
+            iris_core::RetouchStroke {
+                mode: iris_core::RetouchMode::Heal,
+                offset: MaskPoint::new(0.125, -0.0625),
+                radius: 0.03125,
+                hardness: 0.75,
+                opacity: 0.5,
+                flow: 0.25,
+                points: vec![MaskPoint::new(0.25, 0.5), MaskPoint::new(0.375, 0.5)],
+            },
+            iris_core::RetouchStroke { points: vec![MaskPoint::new(0.5, 0.5)], ..Default::default() },
+        ];
+        write_sidecar(&sidecar_path_for(&raw), &raw, &edits).unwrap();
+        assert_eq!(read_sidecar(&raw, &EditState::new(AS_SHOT)).unwrap().unwrap(), edits);
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert_eq!(json["retouch"][0]["mode"], "heal");
+        assert_eq!(json["retouch"][1]["mode"], "clone");
+        // None: no key.
+        write_sidecar(&sidecar_path_for(&raw), &raw, &EditState::new(AS_SHOT)).unwrap();
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert!(json.get("retouch").is_none());
     }
 
     #[test]

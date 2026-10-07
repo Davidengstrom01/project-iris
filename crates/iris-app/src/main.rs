@@ -10,6 +10,7 @@ mod dialogs;
 mod document;
 mod mask_editor;
 mod panels;
+mod retouch_editor;
 mod session;
 mod settings;
 mod texture;

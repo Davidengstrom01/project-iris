@@ -444,6 +444,73 @@ fn ui_tool_tabs() {
     assert_eq!(h.state().test_selected_mask(), Some(0)); // back to the last mask
 }
 
+#[test]
+fn ui_retouch() {
+    use crate::panels::ToolTab;
+    use iris_core::RetouchMode;
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    let image = h.state().view().test_image_rect();
+    let (source, dest) = (image.center() - egui::vec2(150.0, 0.0), image.center() + egui::vec2(100.0, 0.0));
+
+    // S: Retouch in clone mode; painting needs a source first.
+    press(&mut h, Modifiers::NONE, Key::S);
+    assert_eq!(h.state().test_tool(), ToolTab::Retouch);
+    drag(&mut h, dest, dest + egui::vec2(40.0, 0.0));
+    assert!(h.state().test_edits().retouch.is_empty());
+    assert!(h.state().test_status().contains("Alt-click"));
+
+    // Alt-click sets the source; a stroke records where it copies from.
+    let alt_click = |h: &mut Harness<'_, IrisApp>, at: egui::Pos2| {
+        let alt = Modifiers::ALT;
+        h.event_modifiers(egui::Event::PointerMoved(at), alt);
+        h.event_modifiers(
+            egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: alt },
+            alt,
+        );
+        h.step();
+        h.event_modifiers(
+            egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: alt },
+            alt,
+        );
+        h.step();
+    };
+    alt_click(&mut h, source);
+    assert!(h.state().view().has_retouch_source());
+    drag(&mut h, dest, dest + egui::vec2(60.0, 10.0));
+    let strokes = h.state().test_edits().retouch.clone();
+    assert_eq!(strokes.len(), 1);
+    assert_eq!(strokes[0].mode, RetouchMode::Clone);
+    assert!(strokes[0].points.len() > 2);
+    assert!(strokes[0].offset.x < 0.0); // copies from the left
+    assert_eq!(h.state().test_undo_label(), "Clone Stroke");
+
+    // H: heal; a second stroke; undo takes one stroke back at a time.
+    press(&mut h, Modifiers::NONE, Key::H);
+    drag(&mut h, dest + egui::vec2(0.0, 60.0), dest + egui::vec2(30.0, 60.0));
+    assert_eq!(h.state().test_edits().retouch.len(), 2);
+    assert_eq!(h.state().test_edits().retouch[1].mode, RetouchMode::Heal);
+    press(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(h.state().test_edits().retouch.len(), 1);
+
+    // Saved with the photo.
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    let saved = h.state().test_edits().retouch.clone();
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.photo_a.with_extension("iris.json")).unwrap()).unwrap();
+    assert_eq!(json["retouch"].as_array().unwrap().len(), 1);
+
+    // B: the mask brush; I: the eyedropper (on the Light tool).
+    press(&mut h, Modifiers::NONE, Key::B);
+    assert_eq!(h.state().test_tool(), ToolTab::Masks);
+    assert_eq!(h.state().test_selected_mask(), Some(0));
+    press(&mut h, Modifiers::NONE, Key::I);
+    assert_eq!(h.state().test_tool(), ToolTab::Light);
+    assert!(h.state().view().is_picking());
+    assert_eq!(h.state().test_edits().retouch, saved);
+}
+
 /// Screenshots of the main states, for looking at the UI without a display:
 ///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 #[test]
@@ -511,6 +578,43 @@ fn ui_screenshots() {
     let b_row = h.get_by_label("b.ARW").rect();
     h.event(egui::Event::PointerMoved(egui::pos2(b_row.right() - 18.0, b_row.center().y)));
     shot(&mut h, "06-favorites.png");
+
+    // Retouch: clone a stroke, then hover elsewhere to see the source preview.
+    press(&mut h, Modifiers::NONE, Key::S);
+    let image = h.state().view().test_image_rect();
+    let (source, dest) = (image.center() + egui::vec2(-220.0, 120.0), image.center() + egui::vec2(160.0, -120.0));
+    h.event_modifiers(egui::Event::PointerMoved(source), Modifiers::ALT);
+    h.event_modifiers(
+        egui::Event::PointerButton {
+            pos: source,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::ALT,
+        },
+        Modifiers::ALT,
+    );
+    h.step();
+    h.event_modifiers(
+        egui::Event::PointerButton {
+            pos: source,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::ALT,
+        },
+        Modifiers::ALT,
+    );
+    h.step();
+    h.state_mut().test_set_retouch_size(0.04);
+    h.step();
+    drag(&mut h, dest, dest + egui::vec2(80.0, 30.0));
+    wait_until(&mut h, "the retouched preview", |app| app.test_size_label().contains('×'));
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(800) {
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    h.event(egui::Event::PointerMoved(dest + egui::vec2(-40.0, 140.0)));
+    shot(&mut h, "07-retouch.png");
 }
 
 fn image_size(path: &Path) -> [usize; 2] {

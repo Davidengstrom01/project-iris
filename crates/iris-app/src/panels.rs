@@ -32,11 +32,20 @@ pub enum ToolTab {
     Detail,
     Crop,
     Masks,
+    /// Clone and heal.
+    Retouch,
 }
 
 impl ToolTab {
-    pub const ALL: [ToolTab; 6] =
-        [ToolTab::Presets, ToolTab::Light, ToolTab::Color, ToolTab::Detail, ToolTab::Crop, ToolTab::Masks];
+    pub const ALL: [ToolTab; 7] = [
+        ToolTab::Presets,
+        ToolTab::Light,
+        ToolTab::Color,
+        ToolTab::Detail,
+        ToolTab::Crop,
+        ToolTab::Masks,
+        ToolTab::Retouch,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -46,6 +55,7 @@ impl ToolTab {
             ToolTab::Detail => "Detail",
             ToolTab::Crop => "Crop",
             ToolTab::Masks => "Masks",
+            ToolTab::Retouch => "Retouch",
         }
     }
 
@@ -56,7 +66,8 @@ impl ToolTab {
             ToolTab::Color => "Hue, saturation and luminance per colour",
             ToolTab::Detail => "Sharpening and noise reduction",
             ToolTab::Crop => "Crop, rotate and straighten (R)",
-            ToolTab::Masks => "Adjust parts of the photo (M)",
+            ToolTab::Masks => "Adjust parts of the photo (M, B for the brush)",
+            ToolTab::Retouch => "Clone (S) and heal (H) to remove spots and distractions",
         }
     }
 
@@ -69,6 +80,7 @@ impl ToolTab {
             ToolTab::Detail => "detail",
             ToolTab::Crop => "crop",
             ToolTab::Masks => "masks",
+            ToolTab::Retouch => "retouch",
         }
     }
 
@@ -81,11 +93,11 @@ impl ToolTab {
 pub fn tool_tabs(ui: &mut Ui, current: ToolTab) -> Option<ToolTab> {
     let mut clicked = None;
     padded(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = 1.0;
         ui.columns(ToolTab::ALL.len(), |columns| {
             for (column, tool) in columns.iter_mut().zip(ToolTab::ALL) {
-                column.spacing_mut().button_padding.x = 2.0;
-                let button = egui::Button::selectable(current == tool, RichText::new(tool.name()).size(11.5));
+                column.spacing_mut().button_padding.x = 0.0;
+                let button = egui::Button::selectable(current == tool, RichText::new(tool.name()).size(10.5));
                 if column.add_sized([column.available_width(), 24.0], button).on_hover_text(tool.tooltip()).clicked() {
                     clicked = Some(tool);
                 }
@@ -574,11 +586,12 @@ impl MaskPanel {
                 self.brush.radius = v as f32 * RADIUS_PER_SIZE;
                 changed = true;
             }
-            if let Some(v) = Slider::new("Brush Feather", 0.0, 100.0, 0)
+            if let Some(v) = Slider::new("Brush Hardness", 0.0, 100.0, 0)
                 .default_value(50.0)
-                .show(ui, f64::from(self.brush.feather * 100.0).round())
+                .tooltip("100 = a hard edge, 0 = soft from the centre")
+                .show(ui, f64::from((1.0 - self.brush.feather) * 100.0).round())
             {
-                self.brush.feather = (v / 100.0) as f32;
+                self.brush.feather = 1.0 - (v / 100.0) as f32;
                 changed = true;
             }
             if let Some(v) = Slider::new("Brush Opacity", 1.0, 100.0, 0)
@@ -648,6 +661,88 @@ impl MaskPanel {
         }
         ui.add_space(8.0);
     }
+}
+
+// --- Retouch ----------------------------------------------------------------------
+
+pub fn retouch(
+    ui: &mut Ui,
+    brush: &mut crate::retouch_editor::RetouchBrush,
+    has_source: bool,
+    strokes: usize,
+    actions: &mut Vec<Action>,
+) {
+    use iris_core::RetouchMode;
+    panel_title(ui, "RETOUCH", |ui| {
+        let clear = ui.add_enabled(strokes > 0, egui::Button::new(RichText::new("Clear All").size(11.0)));
+        if clear.on_hover_text("Remove all clone and heal strokes").clicked() {
+            actions.push(Action::ClearRetouch);
+        }
+    });
+    padded(ui, |ui| {
+        ui.columns(2, |columns| {
+            for (column, (mode, tip)) in columns.iter_mut().zip([
+                (RetouchMode::Clone, "Copy pixels from the source (S)"),
+                (RetouchMode::Heal, "Copy texture from the source, keeping the colour and light around (H)"),
+            ]) {
+                let button = egui::Button::selectable(brush.mode == mode, mode.name());
+                if column.add_sized([column.available_width(), 22.0], button).on_hover_text(tip).clicked() {
+                    brush.mode = mode;
+                }
+            }
+        });
+        ui.add_space(4.0);
+        let hint = if has_source {
+            "Paint over what you want to hide. Alt-click to copy from somewhere else."
+        } else {
+            "Alt-click the photo to choose where to copy from."
+        };
+        ui.label(RichText::new(hint).size(11.5).color(theme::DIM_TEXT));
+    });
+    ui.add_space(4.0);
+    if let Some(v) = Slider::new("Size", 1.0, 100.0, 0)
+        .default_value(10.0)
+        .show(ui, f64::from((brush.radius / RADIUS_PER_SIZE).round()))
+    {
+        brush.radius = v as f32 * RADIUS_PER_SIZE;
+    }
+    if let Some(v) = Slider::new("Hardness", 0.0, 100.0, 0)
+        .default_value(50.0)
+        .tooltip("100 = a hard edge, 0 = soft from the centre")
+        .show(ui, f64::from(brush.hardness * 100.0).round())
+    {
+        brush.hardness = (v / 100.0) as f32;
+    }
+    if let Some(v) =
+        Slider::new("Opacity", 1.0, 100.0, 0).default_value(100.0).show(ui, f64::from(brush.opacity * 100.0).round())
+    {
+        brush.opacity = (v / 100.0) as f32;
+    }
+    if let Some(v) = Slider::new("Flow", 1.0, 100.0, 0)
+        .default_value(100.0)
+        .tooltip("Below 100 the effect builds up gradually along the stroke")
+        .show(ui, f64::from(brush.flow * 100.0).round())
+    {
+        brush.flow = (v / 100.0) as f32;
+    }
+    padded(ui, |ui| {
+        ui.checkbox(&mut brush.aligned, "Aligned").on_hover_text(
+            "On: the source keeps its distance from the brush between strokes.\n\
+             Off: every stroke copies from the chosen source point again.",
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let noun = if strokes == 1 { "stroke" } else { "strokes" };
+            ui.label(RichText::new(format!("{strokes} {noun}")).color(theme::BODY_TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let remove = ui.add_enabled(strokes > 0, egui::Button::new(RichText::new("Remove Last").size(11.0)));
+                if remove.clicked() {
+                    actions.push(Action::RemoveLastRetouch);
+                }
+            });
+        });
+    });
+    ui.add_space(8.0);
 }
 
 // --- Presets ----------------------------------------------------------------------
