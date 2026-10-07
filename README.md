@@ -76,6 +76,15 @@ The golden test compares renders with reference images from the C++ version; see
 ./target/release/iris-cli --info photo.ARW
 ```
 
+## Layout
+
+- **Left**: the photos in the open photo's folder (scrolling), with the favorites' actions
+  and the photo's info pinned underneath.
+- **Right**: the histogram and a row of tools — *Presets*, *Light* (white balance, tone,
+  presence and the tone curve), *Color*, *Detail*, *Crop* and *Masks*. Only the chosen tool's
+  controls are shown. Crop and Masks are also modes of the photo: choosing them starts
+  cropping or mask editing, choosing another tool ends it (**R** and **M** jump to them).
+
 ## Keyboard shortcuts
 
 | Key | Action |

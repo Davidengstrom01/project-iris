@@ -19,6 +19,82 @@ use crate::mask_editor::{Brush, Tool};
 use crate::theme;
 use crate::widgets::{self, MARGIN, Slider, padded, panel_title, section_label, small_button, small_toggle};
 
+// --- Tools ------------------------------------------------------------------------
+
+/// The tool shown in the right panel. Crop and Masks are also modes of the photo view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolTab {
+    Presets,
+    /// White balance, tone, presence and the tone curve.
+    #[default]
+    Light,
+    Color,
+    Detail,
+    Crop,
+    Masks,
+}
+
+impl ToolTab {
+    pub const ALL: [ToolTab; 6] =
+        [ToolTab::Presets, ToolTab::Light, ToolTab::Color, ToolTab::Detail, ToolTab::Crop, ToolTab::Masks];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ToolTab::Presets => "Presets",
+            ToolTab::Light => "Light",
+            ToolTab::Color => "Color",
+            ToolTab::Detail => "Detail",
+            ToolTab::Crop => "Crop",
+            ToolTab::Masks => "Masks",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            ToolTab::Presets => "Apply and save presets",
+            ToolTab::Light => "White balance, exposure and tone, the tone curve",
+            ToolTab::Color => "Hue, saturation and luminance per colour",
+            ToolTab::Detail => "Sharpening and noise reduction",
+            ToolTab::Crop => "Crop, rotate and straighten (R)",
+            ToolTab::Masks => "Adjust parts of the photo (M)",
+        }
+    }
+
+    /// Settings key.
+    pub fn key(self) -> &'static str {
+        match self {
+            ToolTab::Presets => "presets",
+            ToolTab::Light => "light",
+            ToolTab::Color => "color",
+            ToolTab::Detail => "detail",
+            ToolTab::Crop => "crop",
+            ToolTab::Masks => "masks",
+        }
+    }
+
+    pub fn from_key(key: &str) -> ToolTab {
+        ToolTab::ALL.into_iter().find(|t| t.key() == key).unwrap_or_default()
+    }
+}
+
+/// The row of tool tabs; returns the tool clicked.
+pub fn tool_tabs(ui: &mut Ui, current: ToolTab) -> Option<ToolTab> {
+    let mut clicked = None;
+    padded(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.columns(ToolTab::ALL.len(), |columns| {
+            for (column, tool) in columns.iter_mut().zip(ToolTab::ALL) {
+                column.spacing_mut().button_padding.x = 2.0;
+                let button = egui::Button::selectable(current == tool, RichText::new(tool.name()).size(11.5));
+                if column.add_sized([column.available_width(), 24.0], button).on_hover_text(tool.tooltip()).clicked() {
+                    clicked = Some(tool);
+                }
+            }
+        });
+    });
+    clicked
+}
+
 // --- Basic ------------------------------------------------------------------------
 
 /// Temperature slider moves evenly in mired (1/K), which matches perceived change.
@@ -116,7 +192,7 @@ pub fn crop(ui: &mut Ui, crop: &iris_core::Crop, photo_size: [usize; 2], croppin
         if small_button(ui, "Reset", "Remove the crop and rotation").clicked() {
             actions.push(Action::ResetCrop);
         }
-        let label = if cropping { "Done" } else { "Crop" };
+        let label = if cropping { "Done" } else { "Edit Crop" };
         let tip = if cropping { "Finish cropping (Enter)" } else { "Crop on the photo (R)" };
         if small_toggle(ui, cropping, label, tip).clicked() {
             actions.push(Action::ToggleCrop);
@@ -829,6 +905,35 @@ impl Library {
         self.photos.iter().filter(|p| p.favorite).map(|p| p.path.clone()).collect()
     }
 
+    /// The favorites' count and actions, shown at the bottom of the left panel.
+    pub fn footer(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let favorites = self.photos.iter().filter(|p| p.favorite).count();
+        if favorites == 0 {
+            return;
+        }
+        ui.add_space(4.0);
+        padded(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                star(ui.painter(), rect.center(), 6.5, true, FAVORITE);
+                let noun = if favorites == 1 { "favorite" } else { "favorites" };
+                ui.label(RichText::new(format!("{favorites} {noun}")).color(theme::BODY_TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if small_button(ui, "Move…", "Move the favorites (with their edits) to another folder").clicked()
+                    {
+                        actions.push(Action::MoveFavorites);
+                    }
+                    if small_button(ui, "Export…", "Export all favorites to a folder").clicked() {
+                        actions.push(Action::ExportFavorites);
+                    }
+                });
+            });
+        });
+        ui.add_space(4.0);
+        widgets::separator(ui);
+    }
+
+    /// The folder's photos; the list scrolls in the space it is given.
     pub fn ui(&mut self, ui: &mut Ui, current: Option<&Path>, actions: &mut Vec<Action>) {
         let favorites = self.photos.iter().filter(|p| p.favorite).count();
         if favorites == 0 {
@@ -855,33 +960,6 @@ impl Library {
             }
         });
         ui.add_space(4.0);
-
-        // The favorites' actions sit at the bottom of the panel.
-        if favorites > 0 {
-            egui::Panel::bottom("library-favorites").frame(egui::Frame::NONE).show(ui, |ui| {
-                widgets::separator(ui);
-                ui.add_space(4.0);
-                padded(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                        star(ui.painter(), rect.center(), 6.5, true, FAVORITE);
-                        let noun = if favorites == 1 { "favorite" } else { "favorites" };
-                        ui.label(RichText::new(format!("{favorites} {noun}")).color(theme::BODY_TEXT));
-                    });
-                    ui.horizontal(|ui| {
-                        if small_button(ui, "Export…", "Export all favorites to a folder").clicked() {
-                            actions.push(Action::ExportFavorites);
-                        }
-                        if small_button(ui, "Move…", "Move the favorites (with their edits) to another folder")
-                            .clicked()
-                        {
-                            actions.push(Action::MoveFavorites);
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-            });
-        }
 
         let scroll = std::mem::take(&mut self.scroll_to_current);
         let favorites_only = self.favorites_only;

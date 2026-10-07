@@ -22,6 +22,8 @@ pub struct Settings {
     /// Which groups the Save Preset dialog includes, by their first key.
     pub preset_include: BTreeMap<String, bool>,
     pub mask_overlay: bool,
+    /// The tool shown in the right panel ("light", "masks", ...).
+    pub tool: String,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             preset_folder: iris_persist::library::DEFAULT_USER_FOLDER.into(),
             preset_include: BTreeMap::new(),
             mask_overlay: true,
+            tool: "light".into(),
         }
     }
 }

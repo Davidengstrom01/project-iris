@@ -7,6 +7,9 @@ use iris_core::{BasicAdjustments, HslAdjustments, Mask, MaskType, ToneCurve, Whi
 use iris_persist::{Preset, PresetEntry};
 
 pub enum Action {
+    /// A tool tab was clicked.
+    SelectTool(crate::panels::ToolTab),
+
     // Develop panel.
     /// A slider moved (one undo step per drag).
     EditBasic(BasicAdjustments),

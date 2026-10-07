@@ -63,6 +63,8 @@ fn click(harness: &mut Harness<'_, IrisApp>, label: &str) {
     harness.get_all_by_label(label).last().unwrap_or_else(|| panic!("no {label:?}")).scroll_to_me();
     harness.run_steps(30); // let the animated scrolling settle
     harness.get_all_by_label(label).last().unwrap().click();
+    // Actions apply at the end of a frame; the next frame shows their result.
+    harness.step();
     harness.step();
 }
 
@@ -121,6 +123,7 @@ fn ui_mvp_workflow() {
     assert!(!h.state().test_title().contains('•'));
 
     // Presets: clicking one applies it; undo takes it back.
+    click(&mut h, "Presets");
     click(&mut h, "Warm Film");
     assert_eq!(h.state().test_edits().applied_preset, "Warm Film");
     assert_eq!(h.state().test_edits().basic.exposure, 0.7); // not part of the preset
@@ -206,6 +209,7 @@ fn ui_custom_presets() {
     basic.contrast = 35.0;
     basic.exposure = 1.0;
     h.state_mut().test_apply(Action::EditBasic(basic));
+    click(&mut h, "Presets");
     click(&mut h, "Save Preset…");
     let Some(Dialog::SavePreset(dialog)) = h.state_mut().test_dialog_mut() else { panic!("no dialog") };
     dialog.name = "Punchy".into();
@@ -301,6 +305,7 @@ fn ui_detail_panel() {
     wait_until(&mut h, "the preview", |app| app.test_loaded());
 
     // Moving the Amount slider sharpens; it is one undo step labelled "Sharpening".
+    click(&mut h, "Detail");
     click(&mut h, "Amount");
     let slider_y = h.get_all_by_label("Amount").last().unwrap().rect().bottom() + 9.0;
     let left = h.get_all_by_label("Amount").last().unwrap().rect().left() + 8.0;
@@ -403,6 +408,42 @@ fn ui_favorites() {
     assert_eq!(h.state().test_library().favorites().len(), 2);
 }
 
+#[test]
+fn ui_tool_tabs() {
+    use crate::panels::ToolTab;
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    assert_eq!(h.state().test_tool(), ToolTab::Light);
+    assert!(h.query_by_label("Exposure").is_some());
+    assert!(h.query_by_label("Neutral").is_none()); // presets are not shown
+
+    // Crop is a mode: choosing the tab starts it, another tab ends it.
+    click(&mut h, "Crop");
+    assert!(h.state().test_cropping());
+    click(&mut h, "Color");
+    assert!(!h.state().test_cropping());
+    assert!(h.query_by_label("Magenta").is_some());
+    assert!(h.query_by_label("Exposure").is_none());
+
+    // R jumps to Crop; Enter finishes cropping but stays on the tab.
+    press(&mut h, Modifiers::NONE, Key::R);
+    assert_eq!((h.state().test_tool(), h.state().test_cropping()), (ToolTab::Crop, true));
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    assert_eq!((h.state().test_tool(), h.state().test_cropping()), (ToolTab::Crop, false));
+
+    // Masks: the tab alone selects nothing new; M adds a brush; leaving the tab ends editing.
+    click(&mut h, "Masks");
+    assert_eq!(h.state().test_tool(), ToolTab::Masks);
+    assert!(h.state().test_selected_mask().is_none());
+    press(&mut h, Modifiers::NONE, Key::M);
+    assert_eq!(h.state().test_selected_mask(), Some(0));
+    click(&mut h, "Detail");
+    assert!(h.state().test_selected_mask().is_none());
+    click(&mut h, "Masks");
+    assert_eq!(h.state().test_selected_mask(), Some(0)); // back to the last mask
+}
+
 /// Screenshots of the main states, for looking at the UI without a display:
 ///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 #[test]
@@ -459,6 +500,7 @@ fn ui_screenshots() {
     detail.sharpening.amount = 120.0;
     detail.noise_reduction.color = 25.0;
     h.state_mut().test_apply(Action::EditDetail(detail));
+    h.state_mut().test_apply(Action::SelectTool(crate::panels::ToolTab::Detail));
     press(&mut h, Modifiers::NONE, Key::Num2);
     wait_until(&mut h, "the full-resolution image", |app| app.view().has_full_image());
     h.get_all_by_label("Amount").last().unwrap().scroll_to_me();

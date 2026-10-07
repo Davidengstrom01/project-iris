@@ -19,7 +19,7 @@ use crate::dialogs::{
 };
 use crate::document::EditDocument;
 use crate::mask_editor::Tool;
-use crate::panels::{self, HslProperty, Library, MaskPanel};
+use crate::panels::{self, HslProperty, Library, MaskPanel, ToolTab};
 use crate::session::{BatchJob, PhotoSession, SessionEvent, Update};
 use crate::settings::{STORAGE_KEY, Settings};
 use crate::texture::{Magnify, TiledTexture};
@@ -68,6 +68,8 @@ pub struct IrisApp {
     eyedropper: bool,
     /// Cropping on the photo (the view shows the whole straightened frame).
     cropping: bool,
+    /// The tool shown in the right panel.
+    tool: ToolTab,
     /// The selected mask is edited on the photo (None = normal viewing).
     selected_mask: Option<usize>,
     last_selected_mask: usize,
@@ -99,6 +101,11 @@ impl IrisApp {
         // Ctrl +/- zoom the photo, not the interface.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
+        // Crop and Masks are modes of the photo; a new session starts in Light instead.
+        let tool = match ToolTab::from_key(&settings.tool) {
+            ToolTab::Crop | ToolTab::Masks => ToolTab::Light,
+            tool => tool,
+        };
         let presets = PresetLibrary::new(preset_directory);
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
@@ -117,6 +124,7 @@ impl IrisApp {
             export_enabled: false,
             eyedropper: false,
             cropping: false,
+            tool,
             selected_mask: None,
             last_selected_mask: 0,
             mask_sync: false,
@@ -545,6 +553,9 @@ impl IrisApp {
         if active && !self.session.is_loaded() {
             return;
         }
+        if active {
+            self.tool = ToolTab::Light;
+        }
         self.eyedropper = active;
         self.view.set_pick_mode(active);
         if active {
@@ -567,8 +578,14 @@ impl IrisApp {
     // --- Masks -----------------------------------------------------------------------
 
     fn select_mask(&mut self, index: Option<usize>) {
+        if index.is_some() && self.cropping {
+            self.set_cropping(false);
+        }
         let masks = &self.document.edits().masks;
         self.selected_mask = index.filter(|&i| self.document.is_loaded() && i < masks.len());
+        if self.selected_mask.is_some() {
+            self.tool = ToolTab::Masks;
+        }
         if let Some(i) = self.selected_mask {
             self.last_selected_mask = i;
         }
@@ -634,6 +651,7 @@ impl IrisApp {
         }
         self.set_cropping(false);
         let count = self.document.edits().masks.len();
+        self.tool = ToolTab::Masks;
         if self.selected_mask.is_some() {
             self.select_mask(None);
         } else if count == 0 {
@@ -641,6 +659,36 @@ impl IrisApp {
         } else {
             self.select_mask(Some(self.last_selected_mask.min(count - 1)));
         }
+    }
+
+    // --- Tools -----------------------------------------------------------------------
+
+    /// Shows a tool in the right panel. Leaving Crop or Masks ends cropping or mask editing;
+    /// choosing them starts it.
+    fn set_tool(&mut self, tool: ToolTab) {
+        let previous = self.tool;
+        self.tool = tool;
+        if previous == ToolTab::Crop && tool != ToolTab::Crop {
+            self.set_cropping(false);
+        }
+        if previous == ToolTab::Masks && tool != ToolTab::Masks {
+            self.select_mask(None);
+        }
+        if previous == ToolTab::Light && tool != ToolTab::Light {
+            self.set_eyedropper(false);
+        }
+        match tool {
+            ToolTab::Crop => self.set_cropping(true),
+            ToolTab::Masks if self.selected_mask.is_none() => {
+                let count = self.document.edits().masks.len();
+                if count > 0 {
+                    self.select_mask(Some(self.last_selected_mask.min(count - 1)));
+                }
+            }
+            _ => {}
+        }
+        self.tool = tool;
+        self.settings.tool = tool.key().into();
     }
 
     // --- Crop ------------------------------------------------------------------------
@@ -657,6 +705,7 @@ impl IrisApp {
         }
         self.cropping = on;
         if on {
+            self.tool = ToolTab::Crop;
             self.select_mask(None);
             self.set_eyedropper(false);
             self.view.set_crop_tool(Some((self.document.edits().crop, self.photo_size())));
@@ -863,7 +912,14 @@ impl IrisApp {
                     self.request_file(FileRequest::MoveFavoritesTo, ctx);
                 }
             }
-            Action::ToggleCrop => self.set_cropping(!self.cropping),
+            Action::SelectTool(tool) => self.set_tool(tool),
+            Action::ToggleCrop => {
+                if self.cropping {
+                    self.set_cropping(false);
+                } else {
+                    self.set_tool(ToolTab::Crop);
+                }
+            }
             Action::Confirm => self.set_cropping(false),
             Action::SetCropAspect(aspect) => {
                 if loaded {
@@ -1091,8 +1147,6 @@ impl IrisApp {
                 Action::ToggleSplit,
             );
             ui.separator();
-            button(ui, "Crop", has_photo && loaded, self.cropping, "Crop and rotate (R)".into(), Action::ToggleCrop);
-            button(ui, "Masks", loaded, self.selected_mask.is_some(), "Edit masks (M)".into(), Action::ToggleMasks);
             // Zoom buttons on the right when there is room; otherwise they follow inline (and
             // wrap), rather than drawing over the buttons before them.
             // (In a wrapping row available_width() is the whole row, so measure what is left.)
@@ -1109,40 +1163,54 @@ impl IrisApp {
         });
     }
 
+    /// Histogram, the tool tabs, and only the chosen tool's controls.
     fn right_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        egui::ScrollArea::vertical().id_salt("develop").auto_shrink([false, false]).show(ui, |ui| {
+        let loaded = self.document.is_loaded();
+        ui.add_space(6.0);
+        widgets::histogram(ui, self.histogram.as_deref());
+        ui.add_space(2.0);
+        ui.add_enabled_ui(loaded, |ui| {
+            if let Some(tool) = panels::tool_tabs(ui, self.tool) {
+                actions.push(Action::SelectTool(tool));
+            }
+        });
+        widgets::separator(ui);
+        egui::ScrollArea::vertical().id_salt(("tool", self.tool.key())).auto_shrink([false, false]).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add_space(6.0);
-            widgets::histogram(ui, self.histogram.as_deref());
-            let loaded = self.document.is_loaded();
             ui.add_enabled_ui(loaded, |ui| {
-                panels::presets(ui, &self.presets, actions);
-                widgets::separator(ui);
-                let crop = self.document.edits().crop;
-                panels::crop(ui, &crop, self.photo_size(), self.cropping, actions);
-                widgets::separator(ui);
                 let edits = self.document.edits().clone();
-                let as_shot = self.document.defaults().basic.white_balance;
-                panels::develop(ui, &edits.basic, as_shot, self.eyedropper, actions);
-                widgets::separator(ui);
-                panels::tone_curve(
-                    ui,
-                    &edits.tone_curve,
-                    &mut self.curve_editor,
-                    self.curve_histogram.as_ref(),
-                    actions,
-                );
-                widgets::separator(ui);
-                panels::hsl(ui, &edits.hsl, &mut self.hsl_property, actions);
-                widgets::separator(ui);
-                panels::detail(ui, &edits.detail, actions);
-                widgets::separator(ui);
-                self.mask_panel.ui(ui, &edits.masks, self.selected_mask, actions);
+                match self.tool {
+                    ToolTab::Presets => panels::presets(ui, &self.presets, actions),
+                    ToolTab::Light => {
+                        let as_shot = self.document.defaults().basic.white_balance;
+                        panels::develop(ui, &edits.basic, as_shot, self.eyedropper, actions);
+                        widgets::separator(ui);
+                        panels::tone_curve(
+                            ui,
+                            &edits.tone_curve,
+                            &mut self.curve_editor,
+                            self.curve_histogram.as_ref(),
+                            actions,
+                        );
+                    }
+                    ToolTab::Color => panels::hsl(ui, &edits.hsl, &mut self.hsl_property, actions),
+                    ToolTab::Detail => panels::detail(ui, &edits.detail, actions),
+                    ToolTab::Crop => panels::crop(ui, &edits.crop, self.photo_size(), self.cropping, actions),
+                    ToolTab::Masks => self.mask_panel.ui(ui, &edits.masks, self.selected_mask, actions),
+                }
             });
-            widgets::separator(ui);
+        });
+    }
+
+    /// The folder's photos, with the favorites' actions and the photo's info pinned below.
+    fn left_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        egui::Panel::bottom("left-bottom").frame(egui::Frame::NONE).show(ui, |ui| {
+            self.library.footer(ui, actions);
             let name = self.session.path().map(Self::file_name).unwrap_or_default();
             panels::info(ui, self.metadata.as_ref(), &name);
         });
+        let current = self.session.path().map(Path::to_owned);
+        self.library.ui(ui, current.as_deref(), actions);
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -1448,6 +1516,9 @@ impl IrisApp {
     pub fn test_status(&self) -> String {
         self.status.as_ref().map(|s| s.text.clone()).unwrap_or_default()
     }
+    pub fn test_tool(&self) -> ToolTab {
+        self.tool
+    }
     pub fn test_cropping(&self) -> bool {
         self.cropping
     }
@@ -1475,13 +1546,12 @@ impl eframe::App for IrisApp {
         egui::Panel::bottom("status").frame(bar_frame).show(ui, |ui| self.status_bar(ui));
         if self.panels_visible {
             let side = egui::Frame::NONE.fill(theme::PANEL);
-            egui::Panel::left("library").frame(side).resizable(true).default_size(190.0).min_size(150.0).show(
-                ui,
-                |ui| {
-                    let current = self.session.path().map(Path::to_owned);
-                    self.library.ui(ui, current.as_deref(), &mut actions);
-                },
-            );
+            egui::Panel::left("library")
+                .frame(side)
+                .resizable(true)
+                .default_size(240.0)
+                .min_size(190.0)
+                .show(ui, |ui| self.left_panel(ui, &mut actions));
             egui::Panel::right("develop").frame(side).resizable(true).default_size(330.0).min_size(310.0).show(
                 ui,
                 |ui| {
