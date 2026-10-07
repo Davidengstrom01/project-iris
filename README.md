@@ -18,6 +18,7 @@ Original RAW files are only ever opened read-only.
 | 6 — Masking | Brush, linear and radial masks; overlay; per-mask adjustments; invert; add/subtract/erase | ✅ done |
 | 7 — Crop & polish | Crop with aspect ratios, 90° rotation, straightening; crop shortcuts; smooth zoom, narrow-window toolbar | ✅ done |
 | 8 — Packaging | AppImage, `.deb`, Arch PKGBUILD, desktop entry and icon | ✅ done |
+| 9 — Detail | Sharpening (amount, radius, masking), luminance and colour noise reduction | ✅ done |
 
 ## Installing
 
@@ -147,6 +148,7 @@ source (linear Rec.2020, as-shot WB)
   -> RGB tone curve                  monotone spline, hue-preserving (same lookup table)
   -> HSL                             per colour range, in Oklab
   -> vibrance / saturation
+  -> sharpening / noise reduction    on lightness and colour separately, sized in full-resolution pixels
   -> crop / rotation / straighten    resampled; only the part of the photo the crop needs is developed
   -> sRGB output transform           LittleCMS
 ```
@@ -181,7 +183,7 @@ photo.ARW
 photo.iris.json     {"version": 1, "originalFilename": "photo.ARW", "adjustments": {...},
                      "toneCurve": {"points": [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]]},
                      "hsl": {"blue": {"hue": 0, "saturation": 20, "luminance": -30}},
-                     "masks": [...], "crop": {...}}
+                     "masks": [...], "crop": {...}, "detail": {...}}
 ```
 
 Reopening a photo restores its sidecar automatically. If two RAW files share a base name
@@ -214,6 +216,20 @@ are never part of presets.
            "radial": {"x": 0.5, "y": 0.45, "width": 0.6, "height": 0.4, "rotation": 0, "feather": 0.5},
            "strokes": [], "adjustments": {"exposure": -0.6}}]
 ```
+
+### Detail
+
+The *Detail* panel sharpens and reduces noise, after all tonal and colour edits:
+
+- **Sharpening**: *Amount* (0–150), *Radius* (size of the details sharpened, 0.5–3 px) and
+  *Masking* (0–100: higher values sharpen only edges, leaving smooth areas and their grain
+  alone). It works on lightness only, so it adds no colour fringes.
+- **Noise Reduction**: *Luminance* smooths grain while keeping edges (an edge-preserving
+  guided filter); *Color* removes colour blotches by smoothing only the colour.
+
+Sizes are in full-resolution pixels, so a downscaled preview shows a correspondingly
+subtle effect: judge them at 100% (**2**). Everything is 0 by default, and presets include
+sharpening or noise reduction only when asked to.
 
 ### Crop and rotation
 

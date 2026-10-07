@@ -8,8 +8,8 @@ use iris_core::EditState;
 use serde_json::{Map, Value, json};
 
 use crate::json::{
-    adjustments_to_json, crop_to_json, hsl_to_json, masks_to_json, read_adjustments, read_crop, read_hsl, read_masks,
-    read_tone_curve, tone_curve_to_json,
+    adjustments_to_json, crop_to_json, detail_to_json, hsl_to_json, masks_to_json, read_adjustments, read_crop,
+    read_detail, read_hsl, read_masks, read_tone_curve, tone_curve_to_json,
 };
 use crate::{Error, read_json_object, write_atomically};
 
@@ -59,6 +59,7 @@ pub fn read_sidecar_file(sidecar_path: &Path, defaults: &EditState) -> Result<Op
     edits.hsl = read_hsl(json.get("hsl"));
     edits.masks = read_masks(json.get("masks"));
     edits.crop = read_crop(json.get("crop"));
+    edits.detail = read_detail(json.get("detail"));
     edits.applied_preset = json.get("preset").and_then(Value::as_str).unwrap_or_default().to_owned();
     Ok(Some(edits))
 }
@@ -83,6 +84,9 @@ pub fn sidecar_json(raw_path: &Path, edits: &EditState) -> Value {
     json.insert("masks".into(), masks_to_json(&edits.masks));
     if let Some(crop) = crop_to_json(&edits.crop) {
         json.insert("crop".into(), crop);
+    }
+    if let Some(detail) = detail_to_json(&edits.detail) {
+        json.insert("detail".into(), detail);
     }
     Value::Object(json)
 }
@@ -196,6 +200,24 @@ mod tests {
         assert_eq!(crop.quarter_turns, 3);
         assert_eq!(crop.angle, 45.0);
         assert!(crop.right > crop.left);
+    }
+
+    #[test]
+    fn detail_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("d.ARW");
+        let mut edits = EditState::new(AS_SHOT);
+        edits.detail.sharpening = iris_core::Sharpening { amount: 60.0, radius: 1.5, masking: 30.0 };
+        edits.detail.noise_reduction.color = 25.0;
+        write_sidecar(&sidecar_path_for(&raw), &raw, &edits).unwrap();
+        assert_eq!(read_sidecar(&raw, &EditState::new(AS_SHOT)).unwrap().unwrap(), edits);
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert_eq!(json["detail"]["sharpening"]["amount"], 60);
+        assert_eq!(json["detail"]["noiseReduction"]["color"], 25);
+        // Untouched detail is left out.
+        write_sidecar(&sidecar_path_for(&raw), &raw, &EditState::new(AS_SHOT)).unwrap();
+        let json: Value = serde_json::from_slice(&fs::read(sidecar_path_for(&raw)).unwrap()).unwrap();
+        assert!(json.get("detail").is_none());
     }
 
     #[test]

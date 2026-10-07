@@ -4,6 +4,7 @@
 pub mod color;
 pub mod crop;
 pub mod curve;
+pub mod detail;
 pub mod edit_state;
 pub mod history;
 pub mod hsl;
@@ -13,6 +14,7 @@ pub mod metadata;
 
 pub use crop::Crop;
 pub use curve::{CurvePoint, CurvePoints, CurveSpline, ToneCurve};
+pub use detail::{Detail, NoiseReduction, Sharpening};
 pub use edit_state::{AdjustmentField, BasicAdjustments, EditState, WhiteBalance};
 pub use history::EditHistory;
 pub use hsl::{HslAdjustments, HslBand, HslColor};

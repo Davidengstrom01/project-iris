@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
 use iris_core::edit_state::{ADJUSTMENT_FIELDS, find_adjustment_field};
-use iris_core::{EditState, HslAdjustments, ToneCurve};
+use iris_core::{Detail, EditState, HslAdjustments, NoiseReduction, Sharpening, ToneCurve};
 use serde_json::{Map, Value, json};
 
 use crate::Error;
-use crate::json::{get_f32, hsl_to_json, number, read_hsl, read_tone_curve, tone_curve_to_json};
+use crate::json::{
+    get_f32, hsl_to_json, noise_reduction_to_json, number, read_hsl, read_noise_reduction, read_sharpening,
+    read_tone_curve, sharpening_to_json, tone_curve_to_json,
+};
 
 pub const PRESET_VERSION: i64 = 1;
 
@@ -13,6 +16,10 @@ pub const PRESET_VERSION: i64 = 1;
 pub const TONE_CURVE_KEY: &str = "toneCurve";
 /// Key that selects the HSL adjustments in [`Preset::from_edits`].
 pub const HSL_KEY: &str = "hsl";
+/// Key that selects the sharpening settings in [`Preset::from_edits`].
+pub const SHARPENING_KEY: &str = "sharpening";
+/// Key that selects the noise reduction settings in [`Preset::from_edits`].
+pub const NOISE_REDUCTION_KEY: &str = "noiseReduction";
 
 /// A reusable set of develop settings. Only the settings a preset contains are changed
 /// when it is applied; everything else (and anything photo-specific, such as crop or
@@ -32,6 +39,8 @@ pub struct Preset {
     pub tone_curve: Option<ToneCurve>,
     /// All eight colour ranges when present.
     pub hsl: Option<HslAdjustments>,
+    pub sharpening: Option<Sharpening>,
+    pub noise_reduction: Option<NoiseReduction>,
 }
 
 impl Preset {
@@ -58,6 +67,12 @@ impl Preset {
         if let Some(hsl) = self.hsl {
             result.hsl = hsl;
         }
+        if let Some(sharpening) = self.sharpening {
+            result.detail.sharpening = sharpening;
+        }
+        if let Some(noise_reduction) = self.noise_reduction {
+            result.detail.noise_reduction = noise_reduction;
+        }
         result.applied_preset = self.name.clone();
         result
     }
@@ -71,6 +86,10 @@ impl Preset {
                 preset.tone_curve = Some(edits.tone_curve.clone());
             } else if key == HSL_KEY {
                 preset.hsl = Some(edits.hsl);
+            } else if key == SHARPENING_KEY {
+                preset.sharpening = Some(edits.detail.sharpening);
+            } else if key == NOISE_REDUCTION_KEY {
+                preset.noise_reduction = Some(edits.detail.noise_reduction);
             } else if let Some(field) = find_adjustment_field(key) {
                 preset.values.insert(key.to_owned(), field.get(&edits.basic));
             }
@@ -99,6 +118,16 @@ impl Preset {
         }
         if let Some(hsl) = &self.hsl {
             json.insert("hsl".into(), hsl_to_json(hsl));
+        }
+        let mut detail = Map::new();
+        if let Some(sharpening) = &self.sharpening {
+            detail.insert("sharpening".into(), sharpening_to_json(sharpening));
+        }
+        if let Some(noise_reduction) = &self.noise_reduction {
+            detail.insert("noiseReduction".into(), noise_reduction_to_json(noise_reduction));
+        }
+        if !detail.is_empty() {
+            json.insert("detail".into(), Value::Object(detail));
         }
         Value::Object(json)
     }
@@ -131,6 +160,12 @@ impl Preset {
         if json.get("hsl").is_some_and(Value::is_object) {
             preset.hsl = Some(read_hsl(json.get("hsl")));
         }
+        let detail = json.get("detail");
+        let clamp = |sharpening, noise_reduction| Detail { sharpening, noise_reduction }.sanitized();
+        preset.sharpening =
+            read_sharpening(detail.and_then(|d| d.get("sharpening"))).map(|s| clamp(s, Default::default()).sharpening);
+        preset.noise_reduction = read_noise_reduction(detail.and_then(|d| d.get("noiseReduction")))
+            .map(|n| clamp(Default::default(), n).noise_reduction);
         Ok(preset)
     }
 }
@@ -215,6 +250,16 @@ mod tests {
         assert_eq!(preset.apply(&photo).hsl, photo.hsl); // presets without HSL keep it
 
         assert_eq!(round_trip(&preset), preset);
+
+        // Detail groups are separate and optional.
+        edits.detail.sharpening.amount = 50.0;
+        edits.detail.noise_reduction.luminance = 20.0;
+        let sharp = Preset::from_edits("Sharp", &edits, &[SHARPENING_KEY]);
+        assert_eq!(round_trip(&sharp), sharp);
+        let applied = sharp.apply(&photo);
+        assert_eq!(applied.detail.sharpening.amount, 50.0);
+        assert_eq!(applied.detail.noise_reduction, photo.detail.noise_reduction);
+        assert!(preset.to_json().get("detail").is_none());
         assert!(Preset::from_json(json!({"version": 1}).as_object().unwrap()).is_err());
     }
 

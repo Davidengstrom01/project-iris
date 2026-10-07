@@ -584,7 +584,9 @@ impl PhotoSession {
         let as_shot = self.metadata.as_shot;
         let edits = self.edits.clone();
         let whole_frame = self.whole_frame;
-        let options = RenderOptions { whole_frame, ..Default::default() };
+        // Sharpening and noise reduction keep their size on the smaller previews.
+        let source_scale = image.width as f32 / self.metadata.width.max(1) as f32;
+        let options = RenderOptions { whole_frame, source_scale, ..Default::default() };
         let generation = self.current_generation();
         let version = self.edit_version;
         let tile = tile_size(&self.repaint);

@@ -294,6 +294,38 @@ fn ui_crop_and_rotate() {
     assert_eq!(h.state().test_edits().crop, saved);
 }
 
+#[test]
+fn ui_detail_panel() {
+    let Some(f) = fixture() else { return };
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+
+    // Moving the Amount slider sharpens; it is one undo step labelled "Sharpening".
+    click(&mut h, "Amount");
+    let slider_y = h.get_all_by_label("Amount").last().unwrap().rect().bottom() + 9.0;
+    let left = h.get_all_by_label("Amount").last().unwrap().rect().left() + 8.0;
+    drag(&mut h, egui::pos2(left, slider_y), egui::pos2(left + 120.0, slider_y));
+    let amount = h.state().test_edits().detail.sharpening.amount;
+    assert!(amount > 20.0, "{amount}");
+    assert_eq!(h.state().test_undo_label(), "Sharpening");
+
+    let detail = iris_core::Detail {
+        noise_reduction: iris_core::NoiseReduction { luminance: 30.0, color: 25.0 },
+        ..h.state().test_edits().detail
+    };
+    h.state_mut().test_apply(Action::EditDetail(detail));
+    assert_eq!(h.state().test_undo_label(), "Noise Reduction");
+
+    // Saved with the photo and restored; Reset removes it.
+    press(&mut h, Modifiers::COMMAND, Key::S);
+    let saved = h.state().test_edits().detail;
+    let mut h = harness(&f, &f.photo_a);
+    wait_until(&mut h, "the preview", |app| app.test_loaded());
+    assert_eq!(h.state().test_edits().detail, saved);
+    h.state_mut().test_apply(Action::ResetDetail);
+    assert!(h.state().test_edits().detail.is_neutral());
+}
+
 /// Screenshots of the main states, for looking at the UI without a display:
 ///   IRIS_TEST_RAW=photo.ARW IRIS_TEST_SCREENSHOTS=/some/dir cargo test -p iris-app ui_screenshots
 #[test]
@@ -344,6 +376,16 @@ fn ui_screenshots() {
         std::thread::sleep(Duration::from_millis(20));
     }
     shot(&mut h, "04-mask-on-crop.png");
+
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    let mut detail = h.state().test_edits().detail;
+    detail.sharpening.amount = 120.0;
+    detail.noise_reduction.color = 25.0;
+    h.state_mut().test_apply(Action::EditDetail(detail));
+    press(&mut h, Modifiers::NONE, Key::Num2);
+    wait_until(&mut h, "the full-resolution image", |app| app.view().has_full_image());
+    h.get_all_by_label("Amount").last().unwrap().scroll_to_me();
+    shot(&mut h, "05-detail.png");
 }
 
 fn image_size(path: &Path) -> [usize; 2] {

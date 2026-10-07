@@ -284,6 +284,58 @@ pub fn hsl(ui: &mut Ui, hsl: &HslAdjustments, property: &mut HslProperty, action
     ui.add_space(8.0);
 }
 
+// --- Detail -----------------------------------------------------------------------
+
+pub fn detail(ui: &mut Ui, detail: &iris_core::Detail, actions: &mut Vec<Action>) {
+    use iris_core::detail::{MAX_SHARPEN_AMOUNT, MAX_SHARPEN_RADIUS, MIN_SHARPEN_RADIUS};
+    panel_title(ui, "DETAIL", |ui| {
+        if small_button(ui, "Reset", "Remove sharpening and noise reduction").clicked() {
+            actions.push(Action::ResetDetail);
+        }
+    });
+    padded(ui, |ui| {
+        ui.label(RichText::new("Judge these at 100% (2).").size(11.0).color(theme::DIM_TEXT));
+    });
+    let mut changed = *detail;
+    let mut edited = false;
+    let mut slider = |ui: &mut Ui, s: Slider, value: &mut f32| {
+        if let Some(v) = s.show(ui, f64::from(*value)) {
+            *value = v as f32;
+            edited = true;
+        }
+    };
+    section_label(ui, "Sharpening");
+    slider(ui, Slider::new("Amount", 0.0, f64::from(MAX_SHARPEN_AMOUNT), 0), &mut changed.sharpening.amount);
+    slider(
+        ui,
+        Slider::new("Radius", f64::from(MIN_SHARPEN_RADIUS), f64::from(MAX_SHARPEN_RADIUS), 1)
+            .default_value(1.0)
+            .tooltip("Size of the details to sharpen, in pixels"),
+        &mut changed.sharpening.radius,
+    );
+    slider(
+        ui,
+        Slider::new("Masking", 0.0, 100.0, 0).tooltip("Higher values sharpen only edges, not smooth areas or noise"),
+        &mut changed.sharpening.masking,
+    );
+    ui.add_space(6.0);
+    section_label(ui, "Noise Reduction");
+    slider(
+        ui,
+        Slider::new("Luminance", 0.0, 100.0, 0).tooltip("Smooths grain, keeping edges"),
+        &mut changed.noise_reduction.luminance,
+    );
+    slider(
+        ui,
+        Slider::new("Color", 0.0, 100.0, 0).tooltip("Removes colour blotches"),
+        &mut changed.noise_reduction.color,
+    );
+    if edited {
+        actions.push(Action::EditDetail(changed));
+    }
+    ui.add_space(8.0);
+}
+
 // --- Masks ------------------------------------------------------------------------
 
 /// Brush Size 1..100 -> radius 0.2%..20% of the long edge.

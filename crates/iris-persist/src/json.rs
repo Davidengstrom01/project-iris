@@ -266,3 +266,51 @@ pub fn read_crop(json: Option<&Value>) -> iris_core::Crop {
     }
     .sanitized()
 }
+
+/// `{"amount": 40, "radius": 1, "masking": 0}`
+pub fn sharpening_to_json(s: &iris_core::Sharpening) -> Value {
+    json!({"amount": number(s.amount), "radius": number(s.radius), "masking": number(s.masking)})
+}
+
+/// `{"luminance": 20, "color": 25}`
+pub fn noise_reduction_to_json(n: &iris_core::NoiseReduction) -> Value {
+    json!({"luminance": number(n.luminance), "color": number(n.color)})
+}
+
+pub fn read_sharpening(json: Option<&Value>) -> Option<iris_core::Sharpening> {
+    let o = json?.as_object()?;
+    let d = iris_core::Sharpening::default();
+    Some(iris_core::Sharpening {
+        amount: f32_or(Some(o), "amount", d.amount),
+        radius: f32_or(Some(o), "radius", d.radius),
+        masking: f32_or(Some(o), "masking", d.masking),
+    })
+}
+
+pub fn read_noise_reduction(json: Option<&Value>) -> Option<iris_core::NoiseReduction> {
+    let o = json?.as_object()?;
+    Some(iris_core::NoiseReduction {
+        luminance: f32_or(Some(o), "luminance", 0.0),
+        color: f32_or(Some(o), "color", 0.0),
+    })
+}
+
+/// `{"sharpening": {...}, "noiseReduction": {...}}`; `None` when untouched (the key is
+/// then left out).
+pub fn detail_to_json(detail: &iris_core::Detail) -> Option<Value> {
+    (*detail != iris_core::Detail::default()).then(|| {
+        json!({
+            "sharpening": sharpening_to_json(&detail.sharpening),
+            "noiseReduction": noise_reduction_to_json(&detail.noise_reduction),
+        })
+    })
+}
+
+/// Reads detail settings; missing values are the defaults (none). Values are clamped.
+pub fn read_detail(json: Option<&Value>) -> iris_core::Detail {
+    iris_core::Detail {
+        sharpening: read_sharpening(json.and_then(|j| j.get("sharpening"))).unwrap_or_default(),
+        noise_reduction: read_noise_reduction(json.and_then(|j| j.get("noiseReduction"))).unwrap_or_default(),
+    }
+    .sanitized()
+}

@@ -1,5 +1,5 @@
 use crate::color::{MAX_TEMPERATURE, MAX_TINT, MIN_TEMPERATURE};
-use crate::{Crop, HslAdjustments, Mask, ToneCurve};
+use crate::{Crop, Detail, HslAdjustments, Mask, ToneCurve};
 
 /// Illuminant the photo is balanced for, in Lightroom-style units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +42,8 @@ pub struct EditState {
     /// Local adjustments, applied in order.
     pub masks: Vec<Mask>,
     pub crop: Crop,
+    /// Sharpening and noise reduction.
+    pub detail: Detail,
     /// Name of the last preset applied, if any.
     pub applied_preset: String,
 }

@@ -106,7 +106,7 @@ const BASE_EPSILON: f32 = 0.25;
 const MIN_LUMINANCE: f32 = 1.0 / 65536.0;
 
 /// Mean over a (2r+1)^2 window, shrinking the window at the borders.
-fn box_mean(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+pub(crate) fn box_mean(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let mut tmp = vec![0.0f32; src.len()];
     tmp.par_chunks_mut(w).zip(src.par_chunks(w)).for_each(|(o, input)| {
         let mut sum: f64 = input[..=r.min(w - 1)].iter().map(|&v| f64::from(v)).sum();

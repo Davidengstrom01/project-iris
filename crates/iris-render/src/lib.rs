@@ -2,6 +2,7 @@
 //! shared by the interactive preview and the full-resolution export. No UI and no I/O.
 
 pub mod color_transform;
+pub mod detail;
 pub mod histogram;
 pub mod hsl_mixer;
 pub mod mask_coverage;
@@ -437,5 +438,58 @@ pub(crate) mod tests {
         let left = render(&grey, &AS_SHOT, &edits, &Default::default());
         assert_eq!((left.width, left.height), (20, 40));
         assert!((i32::from(px(&left, 10, 5)[0]) - bright[0]).abs() <= 1);
+    }
+
+    // --- Detail -------------------------------------------------------------------
+
+    fn sharpened(amount: f32) -> EditState {
+        let mut edits = neutral();
+        edits.detail.sharpening = iris_core::Sharpening { amount, radius: 1.0, masking: 0.0 };
+        edits
+    }
+
+    #[test]
+    fn sharpening_shows_on_the_full_image_and_is_scaled_for_previews() {
+        let source = gradient(80, 40);
+        let plain = render(&source, &AS_SHOT, &neutral(), &RenderOptions::default());
+        let sharp = render(&source, &AS_SHOT, &sharpened(150.0), &RenderOptions::default());
+        // A smooth gradient has nothing to sharpen (away from the image border, where the
+        // blur's clamped edge looks like an edge).
+        for y in 2..38 {
+            for x in 2..78 {
+                let (a, b) = (px(&plain, x, y), px(&sharp, x, y));
+                assert!((0..3).all(|c| a[c].abs_diff(b[c]) <= 1), "{a:?} vs {b:?} at {x},{y}");
+            }
+        }
+
+        // An edge gets crisper.
+        let mut edge = solid(80, 40, 0.05, 0.05, 0.05);
+        for y in 0..40 {
+            edge.row_mut(y)[40 * 3..].fill(0.5);
+        }
+        let plain = render(&edge, &AS_SHOT, &neutral(), &RenderOptions::default());
+        let sharp = render(&edge, &AS_SHOT, &sharpened(150.0), &RenderOptions::default());
+        assert!(px(&sharp, 39, 20)[0] < px(&plain, 39, 20)[0]);
+        assert!(px(&sharp, 40, 20)[0] > px(&plain, 40, 20)[0]);
+        // A quarter-size preview of a 1 px radius shows nothing.
+        let preview = RenderOptions { source_scale: 0.2, ..Default::default() };
+        assert_eq!(render(&edge, &AS_SHOT, &sharpened(150.0), &preview), plain);
+    }
+
+    #[test]
+    fn detail_under_a_crop_matches_the_uncropped_render() {
+        let mut edge = solid(80, 40, 0.05, 0.05, 0.05);
+        for y in 0..40 {
+            edge.row_mut(y)[40 * 3..].fill(0.5);
+        }
+        let mut edits = sharpened(150.0);
+        edits.detail.noise_reduction.luminance = 30.0;
+        let full = render(&edge, &AS_SHOT, &edits, &RenderOptions::default());
+        // Crop right up to the edge: the margin lets sharpening see the other side.
+        edits.crop = iris_core::Crop { left: 0.4375, right: 0.6, ..Default::default() };
+        let cropped = render(&edge, &AS_SHOT, &edits, &RenderOptions::default());
+        for x in 0..cropped.width {
+            assert_eq!(px(&cropped, x, 20), px(&full, x + 35, 20), "x {x}");
+        }
     }
 }

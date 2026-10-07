@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use egui::{RichText, Ui};
 use iris_core::EditState;
 use iris_export::{ExportFormat, ExportSettings};
-use iris_persist::preset::{HSL_KEY, TONE_CURVE_KEY};
+use iris_persist::preset::{HSL_KEY, NOISE_REDUCTION_KEY, SHARPENING_KEY, TONE_CURVE_KEY};
 use iris_persist::{Preset, PresetEntry};
 
 use crate::settings::Settings;
@@ -230,7 +230,7 @@ impl ExportDialog {
 
 /// The groups the user can include, and the keys each selects. Presets never include crop,
 /// rotation, masks or other photo-specific settings.
-const GROUPS: [(&str, &[&str]); 11] = [
+const GROUPS: [(&str, &[&str]); 13] = [
     ("Exposure", &["exposure"]),
     ("Contrast", &["contrast"]),
     ("Highlights", &["highlights"]),
@@ -242,7 +242,13 @@ const GROUPS: [(&str, &[&str]); 11] = [
     ("Saturation", &["saturation"]),
     ("Tone Curve", &[TONE_CURVE_KEY]),
     ("Color (HSL)", &[HSL_KEY]),
+    ("Sharpening", &[SHARPENING_KEY]),
+    ("Noise Reduction", &[NOISE_REDUCTION_KEY]),
 ];
+
+/// Groups left out unless the user included them last time: white balance and detail
+/// depend on the photo (light, camera, ISO) more than on the look.
+const OFF_BY_DEFAULT: [&str; 3] = ["temperature", SHARPENING_KEY, NOISE_REDUCTION_KEY];
 
 pub struct SavePresetDialog {
     edits: EditState,
@@ -259,10 +265,9 @@ pub enum SavePresetOutcome {
 
 impl SavePresetDialog {
     pub fn new(edits: &EditState, folders: Vec<String>, settings: &Settings) -> Self {
-        // White balance is photo-specific, so it is off unless the user chose it last time.
         let include = std::array::from_fn(|i| {
             let key = GROUPS[i].1[0];
-            settings.preset_include.get(key).copied().unwrap_or(key != "temperature")
+            settings.preset_include.get(key).copied().unwrap_or(!OFF_BY_DEFAULT.contains(&key))
         });
         Self { edits: edits.clone(), folders, name: String::new(), folder: settings.preset_folder.clone(), include }
     }
@@ -394,6 +399,7 @@ mod tests {
         assert!(!preset.values.contains_key("temperature")); // off by default
         assert!(preset.values.contains_key("contrast"));
         assert!(preset.tone_curve.is_some() && preset.hsl.is_some());
+        assert!(preset.sharpening.is_none() && preset.noise_reduction.is_none()); // off by default
 
         let mut settings = Settings::default();
         dialog.include = [false; GROUPS.len()];

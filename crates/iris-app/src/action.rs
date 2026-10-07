@@ -22,6 +22,9 @@ pub enum Action {
     ChooseCurve(ToneCurve),
     EditHsl(HslAdjustments, String),
     ResetHsl,
+    /// A sharpening or noise reduction slider moved.
+    EditDetail(iris_core::Detail),
+    ResetDetail,
 
     // Masks.
     AddMask(MaskType),

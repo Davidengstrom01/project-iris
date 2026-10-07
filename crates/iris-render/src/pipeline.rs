@@ -9,10 +9,11 @@
 //!     -> RGB tone curve                      (hue-preserving, perceptual space)
 //!     -> HSL: hue / saturation / luminance per colour range (Oklab)
 //!     -> vibrance / saturation
+//!     -> sharpening / noise reduction        (lightness and colour, perceptual)
 //!     -> crop / rotation / straighten         (resampled, display-linear)
 //!     -> output colour transform (sRGB)
 //!
-//! Later stages (detail) slot in before the crop.
+//! Sharpening and noise reduction work on the developed photo before the crop resamples it.
 
 use std::borrow::Cow;
 
@@ -22,6 +23,7 @@ use iris_core::{EditState, EncodedImage, ImageF, Mask, Samples, WhiteBalance};
 use rayon::prelude::*;
 
 use crate::color_transform::{to_srgb8, to_srgb16};
+use crate::detail;
 use crate::hsl_mixer::HslMixer;
 use crate::mask_coverage::MaskCoverage;
 use crate::resample::{fit_size, resize_area};
@@ -44,7 +46,7 @@ const LR: f32 = LUMA_R as f32;
 const LG: f32 = LUMA_G as f32;
 const LB: f32 = LUMA_B as f32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderOptions {
     /// Long edge of the result; 0 = the source's resolution.
     pub max_long_edge: usize,
@@ -52,11 +54,14 @@ pub struct RenderOptions {
     pub bits_per_channel: u32,
     /// Ignore the crop rectangle and show the whole straightened frame (while cropping).
     pub whole_frame: bool,
+    /// Size of `source` relative to the full-resolution photo (e.g. 0.5 for a half-size
+    /// preview decode), so sharpening and noise reduction keep their real-world size.
+    pub source_scale: f32,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { max_long_edge: 0, bits_per_channel: 8, whole_frame: false }
+        Self { max_long_edge: 0, bits_per_channel: 8, whole_frame: false, source_scale: 1.0 }
     }
 }
 
@@ -353,7 +358,23 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
         let input = resized(source, width, height);
         let develop = Develop::new(&input, as_shot, edits);
         let mut output = EncodedImage::new(width, height, bits);
-        encode_rows(&mut output, || develop.scratch(), |coverage, y, out| develop.row(coverage, y, 0, width, out));
+        let scale = options.source_scale * width as f32 / source.width as f32;
+        if detail::is_active(&edits.detail, scale) {
+            // Sharpening and noise reduction look at neighbours: develop everything first.
+            let mut developed = vec![0.0f32; width * height * 3];
+            developed
+                .par_chunks_mut(width * 3)
+                .enumerate()
+                .for_each_init(|| develop.scratch(), |coverage, (y, out)| develop.row(coverage, y, 0, width, out));
+            detail::apply(&mut developed, width, height, &edits.detail, scale);
+            encode_rows(
+                &mut output,
+                || (),
+                |_, y, out| out.copy_from_slice(&developed[y * width * 3..(y + 1) * width * 3]),
+            );
+        } else {
+            encode_rows(&mut output, || develop.scratch(), |coverage, y, out| develop.row(coverage, y, 0, width, out));
+        }
         return output;
     }
 
@@ -385,14 +406,20 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
     let input = resized(source, pw, ph);
     let develop = Develop::new(&input, as_shot, edits);
 
-    // The photo pixels the result needs (with a pixel of margin for interpolation).
+    // The photo pixels the result needs (with a pixel of margin for interpolation, and room
+    // for sharpening and noise reduction to see their neighbours).
+    let scale = options.source_scale * pw as f32 / source.width as f32;
+    let margin = 1.0 + detail::reach(&edits.detail, scale) as f64;
     let to_photo = geometry.photo_to_result.inverted();
     let (gw, gh) = (geometry.width as f64, geometry.height as f64);
     let corners = [(0.0, 0.0), (gw, 0.0), (0.0, gh), (gw, gh)].map(|(x, y)| to_photo.map(x, y));
     let span = |values: [f64; 4], limit: usize| {
         let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        ((lo - 1.0).floor().clamp(0.0, limit as f64) as usize, (hi + 1.0).ceil().clamp(0.0, limit as f64) as usize)
+        (
+            (lo - margin).floor().clamp(0.0, limit as f64) as usize,
+            (hi + margin).ceil().clamp(0.0, limit as f64) as usize,
+        )
     };
     let (x0, x1) = span(corners.map(|c| c.0), pw);
     let (y0, y1) = span(corners.map(|c| c.1), ph);
@@ -404,6 +431,7 @@ pub fn render(source: &ImageF, as_shot: &WhiteBalance, edits: &EditState, option
             .par_chunks_mut(bw * 3)
             .enumerate()
             .for_each_init(|| develop.scratch(), |coverage, (i, out)| develop.row(coverage, y0 + i, x0, x1, out));
+        detail::apply(&mut developed, bw, bh, &edits.detail, scale);
     }
 
     let mut output = EncodedImage::new(geometry.width, geometry.height, bits);

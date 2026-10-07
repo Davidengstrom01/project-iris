@@ -651,6 +651,17 @@ impl IrisApp {
                 state.hsl = hsl;
                 self.edit_interactive(state, &label);
             }
+            Action::EditDetail(detail) => {
+                let mut state = self.document.edits().clone();
+                let label = detail.describe_change(&state.detail);
+                state.detail = detail;
+                self.edit_interactive(state, label);
+            }
+            Action::ResetDetail => {
+                let mut state = self.document.edits().clone();
+                state.detail = Default::default();
+                self.commit(state, "Reset Detail");
+            }
             Action::ResetHsl => {
                 let mut state = self.document.edits().clone();
                 state.hsl = Default::default();
@@ -1002,6 +1013,8 @@ impl IrisApp {
                 widgets::separator(ui);
                 panels::hsl(ui, &edits.hsl, &mut self.hsl_property, actions);
                 widgets::separator(ui);
+                panels::detail(ui, &edits.detail, actions);
+                widgets::separator(ui);
                 self.mask_panel.ui(ui, &edits.masks, self.selected_mask, actions);
             });
             widgets::separator(ui);
@@ -1282,6 +1295,9 @@ impl IrisApp {
     }
     pub fn test_full_size(&self) -> [usize; 2] {
         self.metadata.as_ref().map_or([0, 0], |m| [m.width, m.height])
+    }
+    pub fn test_undo_label(&self) -> &str {
+        self.document.undo_label()
     }
     pub fn test_cropping(&self) -> bool {
         self.cropping
